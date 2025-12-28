@@ -57,8 +57,6 @@ Mervis_Project/
 ### 2. Tech Stack (기술 스택)
 
 ```text
-## Tech Stack
-
 * **Language:** Python 3.11+
 * **AI Engine:** Google GenAI SDK (Gemini)
 * **Data Provider:** Korea Investment Securities (KIS) Open API
