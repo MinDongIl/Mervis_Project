@@ -1,0 +1,12 @@
+# 보안 파일 (절대 업로드 금지)
+secret.py
+mervis_token_cache.json
+mervis_history.json
+
+# 파이썬 캐시 및 시스템 파일
+__pycache__/
+*.pyc
+.DS_Store
+.vscode/
+.idea/
+venv/
