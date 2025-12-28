@@ -52,6 +52,7 @@ Mervis_Project/
 ├── kis_order.py        # 주문 집행 (매수/매도)
 ├── secret.py           # (보안) API Key 및 계좌 정보 *Git 업로드 금지*
 └── journal/            # 개발 및 연구 일지 (History)
+```
 
 ### 2. Tech Stack (기술 스택)
 
@@ -62,6 +63,7 @@ Mervis_Project/
 * **AI Engine:** Google GenAI SDK (Gemini)
 * **Data Provider:** Korea Investment Securities (KIS) Open API
 * **Data Processing:** Pandas
+```
 
 ## Disclaimer
 
