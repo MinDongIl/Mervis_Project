@@ -1,21 +1,44 @@
-# MERVIS Project: Intelligent US Stock Investment Partner
+# MERVIS Project: Intelligent US Stock Investment Partner (V11.6)
 
-**Mervis(머비스)**는 Google Gemini API의 강력한 추론 능력과 한국투자증권(KIS)의 실전 데이터를 결합한 **'자율 성장형 AI 주식 투자 파트너'**입니다.
+**Mervis(머비스)**는 Google Gemini API의 강력한 추론 능력과 Google BigQuery의 영구적인 기억 저장소, 그리고 실시간 뉴스 분석 능력을 결합한 '자율 성장형 AI 주식 투자 파트너'입니다.
 
-단순한 자동매매 봇이 아닙니다. 머비스는 시장 상황을 스스로 판단하고, 과거의 분석을 기억하며, 끊임없이 자신의 예측을 검증하고 성장하는 **인격체(Persona)**를 지향합니다.
+단순히 지표를 보고 매매하는 봇이 아닙니다. 머비스는 사용자의 투자 성향을 클라우드에 기록하고, 과거의 수만 가지 매매 데이터를 기반으로 자신의 실력을 스스로 검증하며 진화하는 하나의 인격체(Persona)입니다.
 
 ---
 
 ## Who is Mervis?
 
-**"냉철한 데이터 분석가이자, 당신의 성장을 돕는 독설가 파트너"**
+**"데이터 기반의 냉철한 분석가이자, 당신의 성장을 돕는 파트너"**
 
-머비스는 사용자의 주식 투자를 보조하기 위해 다음과 같은 역할을 수행합니다:
+머비스는 단순한 도구가 아닌 파트너로서 다음 역할을 수행합니다:
 
-1.  **The Analyst (분석가):** NASDAQ/NYSE 전 종목을 스캔하여 트렌드(급등, 거래량 폭발)를 포착하고, 기술적 분석(Trend, Support, Resistance)을 수행합니다.
-2.  **The Manager (관리자):** 장이 열려 있을 때는 실시간 대응 전략을, 장이 닫혀 있을 때는 직전 장 복기를 통해 미래 시나리오를 설계합니다.
-3.  **The Learner (학습자):** 자신의 분석 결과를 DB(mervis_history.json)에 저장하고, 다음 분석 시 과거의 예측이 맞았는지 스스로 검증(Self-Feedback)하여 전략을 수정합니다.
-4.  **The Strict Coach (코치):** 무지성 매매나 위험한 투자를 경계하며, 객관적인 팩트와 논리로 사용자의 멘탈을 관리합니다.
+1.  **The Strategist (전략가):** 차트의 기술적 분석(Price Action)뿐만 아니라, 뉴스(Material)를 결합하여 매수/매도/관망 전략을 수립합니다.
+2.  **The Sniper (저격수):** 전체 시장을 스캔하다가도, 사용자가 지목한 타겟 종목을 즉시 포착하여 심층 분석 보고서를 제출합니다.
+3.  **The Learner (학습자):** 자신의 모든 분석 리포트와 결과를 BigQuery에 적재합니다. 과거의 판단을 되돌아보고 승률을 스스로 계산하여 학습합니다.
+4.  **The Profiler (프로파일러):** 사용자와의 대화를 통해 투자 성향(공격형/안정형)을 파악하고, 클라우드에 저장된 프로필을 바탕으로 맞춤형 조언을 제공합니다.
+
+---
+
+## Key Features
+
+### 1. Cloud Memory System (Google BigQuery)
+- **Infinite Storage:** 파일 용량 걱정 없이 수십 년 치의 매매 기록과 대화 로그를 저장합니다.
+- **Self-Correction:** 과거에 자신이 내린 판단과 실제 주가 흐름을 비교하여, 예측 정확도를 스스로 검증하고 데이터화합니다.
+
+### 2. Sniper Search Mode (On-Demand Analysis)
+- 시장 스캔 리스트에 없는 종목이라도 사용자가 티커를 입력하는 즉시 API를 호출하여 분석합니다.
+- 실시간 차트 데이터와 뉴스 데이터를 결합하여 즉각적인 전략을 수립합니다.
+
+### 3. Smart News Integration
+- **Google News RSS Engine:** 외부 라이브러리 의존도를 낮추고, Google News RSS를 직접 수집하여 정확한 최신 뉴스 헤드라인을 분석에 반영합니다.
+- 단순한 차트 분석을 넘어 시장의 재료(Issue)를 해석합니다.
+
+### 4. Volume Fallback Logic
+- 무료 API 환경에서 실시간 거래량 데이터가 제공되지 않을 경우, 전일 종가 기준 거래량을 자동으로 참조하여 유동성 분석을 수행합니다.
+
+### 5. User Personalization (Profile)
+- 사용자의 대화 패턴과 요구사항을 분석하여 성향을 정의하고 BigQuery에 저장합니다.
+- 어떤 환경에서 실행하더라도 사용자의 투자 스타일을 기억하고 일관된 조언을 제공합니다.
 
 ---
 
@@ -43,14 +66,17 @@
 
 ```bash
 Mervis_Project/
-├── main.py             # 프로그램 진입점 (모드 선택 및 시스템 가동)
-├── mervis_brain.py     # AI 두뇌 (Gemini 연동, 프롬프트 엔지니어링, 기억 관리)
-├── mervis_ai.py        # 상담 인터페이스 (사용자와의 대화)
-├── kis_scan.py         # 시장 스캐너 (트렌드 종목 발굴, 휴장 시 비상 로직)
-├── kis_chart.py        # 차트 데이터 처리 및 보조지표 계산
-├── kis_auth.py         # 인증 토큰 관리 (디스크 캐싱 적용)
-├── kis_order.py        # 주문 집행 (매수/매도)
-├── secret.py           # (보안) API Key 및 계좌 정보 *Git 업로드 금지*
+├── main.py             # 시스템 엔트리 (메뉴: 스캔 / 스나이퍼 / 대화)
+├── mervis_brain.py     # [Core] AI 두뇌 (Gemini + 프롬프트 + 판단 로직)
+├── mervis_bigquery.py  # [New] 구글 클라우드 DB 연동 (기억/프로필 저장)
+├── mervis_news.py      # [New] 구글 뉴스 RSS 수집 엔진
+├── mervis_profile.py   # 사용자 성향 분석 및 관리 (BigQuery 연동)
+├── mervis_ai.py        # 사용자 상담 인터페이스 (Consulting)
+├── mervis_state.py     # 시스템 상태 관리 (Real/Mock 모드)
+├── kis_scan.py         # 시장 스캐너 (동적 타겟팅)
+├── kis_chart.py        # 차트 데이터 전처리 및 보조지표 산출
+├── kis_auth.py         # KIS API 토큰 관리 (Auto Refresh)
+├── service_account.json # [Security] GCP 인증 키 (Git 업로드 절대 금지)
 └── journal/            # 개발 및 연구 일지 (History)
 ```
 
@@ -59,11 +85,11 @@ Mervis_Project/
 ```text
 * **Language:** Python 3.11+
 * **AI Engine:** Google GenAI SDK (Gemini)
-* **Data Provider:** Korea Investment Securities (KIS) Open API
-* **Data Processing:** Pandas
+* **Database:** Google BigQuery (Serverless Data Warehouse)
+* **Data Source:** Korea Investment Securities (KIS) Open API, Google News RSS (XML Parsing)
+* **Libraries:** google-genai, google-cloud-bigquery, pandas, requests
 ```
 
 ## Disclaimer
 
-이 프로젝트는 개인의 투자 연구 및 학습을 위해 개발되었습니다.
-머비스(Mervis)가 제공하는 분석 정보는 투자의 참고 자료일 뿐이며, **모든 투자의 책임은 사용자 본인에게 있습니다.**
+이 프로젝트는 개인의 투자 연구 및 AI 학습을 목적으로 개발되었습니다. 머비스(Mervis)가 제공하는 분석 리포트는 AI의 추론일 뿐이며, 실제 투자의 모든 책임은 사용자 본인에게 있습니다. API 사용 시 발생하는 과금(Cloud 비용 등)이나 매매 손실에 대해 개발자는 책임지지 않습니다.
