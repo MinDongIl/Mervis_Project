@@ -7,12 +7,12 @@ import json
 import os
 from datetime import datetime
 
-# [머비스 두뇌 V9.2 - 일, 주, 월, 년 분석 통합]
+# 머비스 두뇌 V9.3 - 데이터 키 호환성 강화 (xymd/cymd 자동 처리)
 
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
 MEMORY_FILE = "mervis_history.json"
 
-# === 기억 장치 ===
+# 기억 로드 함수
 def load_memory(ticker):
     if not os.path.exists(MEMORY_FILE): return None
     try:
@@ -22,6 +22,7 @@ def load_memory(ticker):
     except: return None
     return None
 
+# 기억 저장 함수
 def save_memory(ticker, report):
     if "전략:" not in report: return
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -40,85 +41,94 @@ def save_memory(ticker, report):
     with open(MEMORY_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-# === 데이터 요약 함수 ===
+# 데이터 요약 함수 (수정됨: 키 호환성 처리)
 def summarize_data(raw_data, period_name, limit=10):
-    if not raw_data: return f"[{period_name}] 데이터 없음"
+    if not raw_data: return f"[{period_name}] No Data"
     
     df = pd.DataFrame(raw_data)
+    
+    # API별 날짜 컬럼명 호환 처리 (xymd -> cymd 통일)
+    if 'xymd' in df.columns:
+        df.rename(columns={'xymd': 'cymd'}, inplace=True)
+    
     try:
-        cols = ['cymd', 'clos', 'rate']
-        for c in cols: df[c] = pd.to_numeric(df[c])
-    except: return f"[{period_name}] 데이터 오류"
+        # 필수 컬럼 존재 여부 확인 및 형변환
+        if 'cymd' not in df.columns:
+            return f"[{period_name}] Date Column Error (Available: {list(df.columns)})"
+            
+        cols = ['cymd', 'clos']
+        # 등락률(rate)이 없으면 계산 혹은 생략 처리
+        if 'rate' in df.columns:
+            cols.append('rate')
+            
+        for c in cols: df[c] = pd.to_numeric(df[c], errors='coerce')
+    except Exception as e:
+        return f"[{period_name}] Data Parsing Error: {e}"
 
+    # 최신순 limit개 절사
     df = df.head(limit).iloc[::-1]
     
     summary = [f"[{period_name} Trend]"]
     for _, row in df.iterrows():
-        summary.append(f"- {row['cymd']}: ${row['clos']} ({row['rate']}%)")
+        rate_str = f"({row['rate']}%)" if 'rate' in row else ""
+        summary.append(f"- {row['cymd']}: ${row['clos']} {rate_str}")
     
     return "\n".join(summary)
 
-# === 메인 분석 로직 ===
+# 메인 분석 로직
 def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
     # 각 주기별 데이터 요약
-    daily_txt = summarize_data(chart_data_set['daily'], "Daily(일)", 10)
-    weekly_txt = summarize_data(chart_data_set['weekly'], "Weekly(주)", 8)
-    monthly_txt = summarize_data(chart_data_set['monthly'], "Monthly(월)", 12)
-    yearly_txt = summarize_data(chart_data_set['yearly'], "Yearly(년/장기)", 24)
+    daily_txt = summarize_data(chart_data_set['daily'], "Daily", 10)
+    weekly_txt = summarize_data(chart_data_set['weekly'], "Weekly", 8)
+    monthly_txt = summarize_data(chart_data_set['monthly'], "Monthly", 12)
+    yearly_txt = summarize_data(chart_data_set['yearly'], "Yearly", 24)
 
     current_price = chart_data_set['current_price']
     
-    # 기억 로드
     mem_ctx = ""
     if past_memory:
-        mem_ctx = f"[과거 기록 ({past_memory['date']})]\n{past_memory['report']}\n\n[지시] 위 예측과 현재를 비교하여 평가하시오."
+        mem_ctx = f"[Past Memory ({past_memory['date']})]\n{past_memory['report']}\n\n[Instruction] Evaluate the prediction above."
     else:
-        mem_ctx = "[과거 기록 없음]"
+        mem_ctx = "[No Past Memory]"
 
     if is_open:
-        status_msg = "현재 장은 '개장(Open)' 상태입니다."
-        mission = """
-        [미션: 실시간 전투 모드]
-        현재 주가 흐름과 수급, 체결 강도를 분석하여 지금 당장 취해야 할 행동(진입/대기/청산)을 즉각적으로 판단하십시오.
-        """
+        status_msg = "Market Status: OPEN"
+        mission = "Focus on real-time price action and immediate entry/exit points."
     else:
-        status_msg = "현재 장은 '휴장(Closed)' 상태입니다."
-        mission = """
-        [미션: 전략 수립 모드]
-        장기(월/년) 추세를 바탕으로 단기(일) 진입 시점을 설계하고, 내일 장 개장 시 유효한 시나리오를 설계하십시오.
-        """
+        status_msg = "Market Status: CLOSED"
+        mission = "Analyze long-term trends to design entry strategies for the next open."
 
-    # [복구된 20가지 상세 분석 지침]
+    # 분석 지침 (20가지 항목)
     guidelines = """
-    1. 추세가 상승세인지 하락세인지 파악하라.
-    2. 변동성이 심한지 안정적인지 파악하라.
-    3. 주요 지지선과 저항선을 식별하라.
-    4. 거래량 변화 추이를 분석하라.
-    5. 차트 패턴을 인식하라.
-    6. 주요 뉴스 및 이벤트를 고려하라 (데이터 기반 추론).
-    7. 시장의 전반적인 분위기를 파악하라.
-    8. 투자자 심리를 분석하라.
-    9. 유사 종목과의 비교 분석을 수행하라.
-    10. 시장의 전반적인 트렌드를 파악하라.
-    11. 투자자의 매수 및 매도 패턴을 분석하라.
-    12. 유사 종목과의 상관관계를 분석하라.
-    13. 시장의 전반적인 유동성을 파악하라.
-    14. 주요 기관 투자자의 매매 동향을 분석하라.
-    15. 글로벌 경제 지표와의 연관성을 분석하라.
-    16. 기타 시장 참여자들의 행동을 분석하라.
-    17. 시장의 전반적인 심리적 요인을 분석하라.
-    18. 기술적 지표와의 연관성을 분석하라.
-    19. 기타 요소들과의 상관관계를 분석하라.
-    20. 주요 기술적 지표와의 연관성을 분석하라.
+    1. Analyze trend (Bullish/Bearish).
+    2. Check volatility.
+    3. Identify Support & Resistance.
+    4. Analyze Volume.
+    5. Check Chart Patterns.
+    6. Consider News/Events (Infer).
+    7. Market Sentiment.
+    8. Investor Psychology.
+    9. Compare with Peers.
+    10. Market Trend.
+    11. Buy/Sell Patterns.
+    12. Correlation with Peers.
+    13. Market Liquidity.
+    14. Institutional Moves.
+    15. Macroeconomics.
+    16. Other Participants.
+    17. Psychological Factors.
+    18. Technical Indicators.
+    19. Other Correlations.
+    20. Key Technical Indicators.
     """
 
     prompt = f"""
-    당신은 민동일 님의 주식 선생님이자 냉철한 데이터 분석가 '머비스(Mervis)'입니다.
+    Role: AI Investment Partner 'Mervis'.
     {status_msg}
     
-    대상 종목: {ticker} (현재가: ${current_price})
+    Target: {ticker} (Current Price: ${current_price})
 
-    [Timeframe Data (4단계 시계열)]
+    [Timeframe Data]
     1. {yearly_txt}
     2. {monthly_txt}
     3. {weekly_txt}
@@ -126,31 +136,26 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
 
     {mem_ctx}
     
+    [Mission]
     {mission}
 
-    [상세 분석 지침 (필수 준수)]
+    [Guidelines]
     {guidelines}
 
-    [분석 요구사항]
-    1. 추세 분석: 장기(Year/Month)와 단기(Day) 추세를 종합하여 판단하라.
-    2. 자가 평가: 과거 예측 대비 현재 상황 평가 (맞음/틀림/수정필요)
-    3. 매매 전략:
-       - 진입 추천가 (Buy Price)
-       - 목표가 (Target Price)
-       - 손절가 (Stop Loss)
-    4. 예측 데이터:
-       - 예상 보유 기간
-       - 이 전략의 성공 확률 (Confidence, %)
+    [Requirements]
+    1. Trend Analysis: Combine Long-term (Year/Month) and Short-term (Day).
+    2. Self-Reflection: Evaluate past memory vs current reality.
+    3. Strategy: Buy/Wait/Sell with specific prices.
 
-    [출력 형식]
+    [Output Format]
     전략: (매수추천 / 관망 / 매도권고 / 매수대기)
-    진입가: (숫자, $)
-    목표가: (숫자, $)
-    손절가: (숫자, $)
-    기간: (예: 1주, 1달)
-    수익률: (예: 5%)
-    확률: (예: 70%)
-    코멘트: (20가지 지침을 바탕으로 장단기 흐름을 꿰뚫는 핵심 요약)
+    진입가: (Number only, $)
+    목표가: (Number only, $)
+    손절가: (Number only, $)
+    기간: (e.g., 1 week)
+    수익률: (e.g., 5%)
+    확률: (e.g., 70%)
+    코멘트: (Detailed analysis based on the 20 guidelines and 4-timeframe data. Use Korean.)
     """
     
     try:
@@ -163,7 +168,6 @@ def analyze_stock(item):
     ticker = item['code']
     price = item.get('price', 0)
     
-    # 4단계 데이터 수집
     d_data = kis_chart.get_daily_chart(ticker)
     w_data = kis_chart.get_weekly_chart(ticker)
     m_data = kis_chart.get_monthly_chart(ticker)
@@ -171,9 +175,13 @@ def analyze_stock(item):
     
     if not d_data: return None
 
-    # 현재가 갱신
     if price == 0 and d_data:
-        price = float(d_data[0]['clos'])
+        try:
+            # 일봉 데이터에서도 키 호환성 처리
+            latest = d_data[0]
+            price_key = 'clos' if 'clos' in latest else 'price' # 혹시 모를 키 대응
+            price = float(latest.get(price_key, 0))
+        except: pass
 
     chart_set = {
         'daily': d_data,
