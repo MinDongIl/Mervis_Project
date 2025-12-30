@@ -7,12 +7,11 @@ import json
 import os
 from datetime import datetime
 
-# 머비스 두뇌 V9.3 - 데이터 키 호환성 강화 (xymd/cymd 자동 처리)
-
+# Google GenAI Client
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
 MEMORY_FILE = "mervis_history.json"
 
-# 기억 로드 함수
+# Load past memory
 def load_memory(ticker):
     if not os.path.exists(MEMORY_FILE): return None
     try:
@@ -22,7 +21,7 @@ def load_memory(ticker):
     except: return None
     return None
 
-# 기억 저장 함수
+# Save current analysis to memory
 def save_memory(ticker, report):
     if "전략:" not in report: return
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -36,48 +35,47 @@ def save_memory(ticker, report):
     
     if ticker not in data: data[ticker] = []
     data[ticker].append(entry)
+    
+    # Limit memory storage to last 30 items
     if len(data[ticker]) > 30: data[ticker] = data[ticker][-30:]
         
     with open(MEMORY_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-# 데이터 요약 함수 (수정됨: 키 호환성 처리)
+# Summarize raw list data into string
 def summarize_data(raw_data, period_name, limit=10):
-    if not raw_data: return f"[{period_name}] No Data"
+    if not raw_data: return f"[{period_name}] No Data available."
     
     df = pd.DataFrame(raw_data)
     
-    # API별 날짜 컬럼명 호환 처리 (xymd -> cymd 통일)
+    # Normalize date column (xymd -> cymd)
     if 'xymd' in df.columns:
         df.rename(columns={'xymd': 'cymd'}, inplace=True)
     
     try:
-        # 필수 컬럼 존재 여부 확인 및 형변환
+        # Check essential columns
         if 'cymd' not in df.columns:
-            return f"[{period_name}] Date Column Error (Available: {list(df.columns)})"
+            return f"[{period_name}] Error: Date column missing. Keys: {list(df.columns)}"
             
         cols = ['cymd', 'clos']
-        # 등락률(rate)이 없으면 계산 혹은 생략 처리
-        if 'rate' in df.columns:
-            cols.append('rate')
+        if 'rate' in df.columns: cols.append('rate')
             
         for c in cols: df[c] = pd.to_numeric(df[c], errors='coerce')
     except Exception as e:
         return f"[{period_name}] Data Parsing Error: {e}"
 
-    # 최신순 limit개 절사
+    # Sort descending to slice, then reverse for display
     df = df.head(limit).iloc[::-1]
     
     summary = [f"[{period_name} Trend]"]
     for _, row in df.iterrows():
-        rate_str = f"({row['rate']}%)" if 'rate' in row else ""
-        summary.append(f"- {row['cymd']}: ${row['clos']} {rate_str}")
+        rate_info = f"({row['rate']}%)" if 'rate' in row else ""
+        summary.append(f"- {row['cymd']}: ${row['clos']} {rate_info}")
     
     return "\n".join(summary)
 
-# 메인 분석 로직
+# Generate Prompt and Call Gemini
 def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
-    # 각 주기별 데이터 요약
     daily_txt = summarize_data(chart_data_set['daily'], "Daily", 10)
     weekly_txt = summarize_data(chart_data_set['weekly'], "Weekly", 8)
     monthly_txt = summarize_data(chart_data_set['monthly'], "Monthly", 12)
@@ -87,25 +85,25 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
     
     mem_ctx = ""
     if past_memory:
-        mem_ctx = f"[Past Memory ({past_memory['date']})]\n{past_memory['report']}\n\n[Instruction] Evaluate the prediction above."
+        mem_ctx = f"[Past Memory ({past_memory['date']})]\n{past_memory['report']}\n\n[Instruction] Review the past prediction against current data."
     else:
         mem_ctx = "[No Past Memory]"
 
     if is_open:
-        status_msg = "Market Status: OPEN"
-        mission = "Focus on real-time price action and immediate entry/exit points."
+        status_msg = "Market Status: OPEN (Live Trading)"
+        mission = "Provide real-time actionable strategy (Entry/Exit/Wait)."
     else:
-        status_msg = "Market Status: CLOSED"
-        mission = "Analyze long-term trends to design entry strategies for the next open."
+        status_msg = "Market Status: CLOSED (Post-Market)"
+        mission = "Analyze long-term trends and prepare a strategy for the next open."
 
-    # 분석 지침 (20가지 항목)
+    # 20 Analysis Guidelines
     guidelines = """
     1. Analyze trend (Bullish/Bearish).
     2. Check volatility.
     3. Identify Support & Resistance.
     4. Analyze Volume.
     5. Check Chart Patterns.
-    6. Consider News/Events (Infer).
+    6. Consider News/Events (Infer from data).
     7. Market Sentiment.
     8. Investor Psychology.
     9. Compare with Peers.
@@ -143,9 +141,9 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
     {guidelines}
 
     [Requirements]
-    1. Trend Analysis: Combine Long-term (Year/Month) and Short-term (Day).
-    2. Self-Reflection: Evaluate past memory vs current reality.
-    3. Strategy: Buy/Wait/Sell with specific prices.
+    1. Trend Analysis: Synthesize Year/Month/Day trends.
+    2. Self-Reflection: Explicitly evaluate past memory accuracy.
+    3. Strategy: Define specific Buy/Target/Stop prices.
 
     [Output Format]
     전략: (매수추천 / 관망 / 매도권고 / 매수대기)
@@ -155,19 +153,27 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
     기간: (e.g., 1 week)
     수익률: (e.g., 5%)
     확률: (e.g., 70%)
-    코멘트: (Detailed analysis based on the 20 guidelines and 4-timeframe data. Use Korean.)
+    코멘트: (Detailed analysis in Korean, citing the 4-timeframe data and guidelines.)
     """
+    
+    # [Debug] Save the actual prompt to file for verification
+    try:
+        with open(f"debug_prompt_{ticker}.txt", "w", encoding="utf-8") as f:
+            f.write(prompt)
+    except: pass
     
     try:
         res = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
         return res.text.strip()
     except Exception as e:
-        return f"전략: 분석불가\n코멘트: {e}"
+        return f"전략: 분석불가\n코멘트: Error generating content - {e}"
 
+# Main Entry Point
 def analyze_stock(item):
     ticker = item['code']
     price = item.get('price', 0)
     
+    # Fetch Multi-Timeframe Data
     d_data = kis_chart.get_daily_chart(ticker)
     w_data = kis_chart.get_weekly_chart(ticker)
     m_data = kis_chart.get_monthly_chart(ticker)
@@ -175,12 +181,13 @@ def analyze_stock(item):
     
     if not d_data: return None
 
+    # Update current price from latest data if needed
     if price == 0 and d_data:
         try:
-            # 일봉 데이터에서도 키 호환성 처리
             latest = d_data[0]
-            price_key = 'clos' if 'clos' in latest else 'price' # 혹시 모를 키 대응
-            price = float(latest.get(price_key, 0))
+            # Handle both 'clos' and 'price' keys
+            p_val = latest.get('clos') or latest.get('price') or latest.get('last')
+            if p_val: price = float(p_val)
         except: pass
 
     chart_set = {

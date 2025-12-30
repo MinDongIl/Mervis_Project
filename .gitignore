@@ -1,3 +1,16 @@
+# --- Mervis Generated Data ---
+# 머비스 기억 장치 (분석 리포트 저장소)
+mervis_history.json
+
+# 디버깅용 프롬프트 파일 (자동 생성됨)
+debug_prompt_*.txt
+
+# API 인증 토큰 (로컬 캐시)
+mervis_token_cache.json
+
+# (선택) 타겟 종목 리스트가 개인적인 경우
+# target_codes.txt
+
 # 보안 파일 (절대 업로드 금지)
 secret.py
 mervis_token_cache.json
