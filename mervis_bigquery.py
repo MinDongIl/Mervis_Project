@@ -31,7 +31,7 @@ def save_log(ticker, mode, price, report, news_summary=""):
     }]
     client.insert_rows_json(table_ref, rows)
 
-# [수정] 최근 기억 단일 조회 (에러 로그 추가)
+# [수정] 개별 기억 조회 (안정성 강화 유지)
 def get_recent_memory(ticker):
     client = get_client()
     if not client: return None
@@ -43,7 +43,6 @@ def get_recent_memory(ticker):
     try:
         results = list(client.query(query).result())
         if results: 
-            # log_date가 Timestamp 객체일 수도, String일 수도 있으므로 str()로 안전하게 변환
             date_str = str(results[0].log_date)
             return {"date": date_str, "report": results[0].report}
     except Exception as e:
@@ -51,27 +50,28 @@ def get_recent_memory(ticker):
         return None
     return None
 
-# [수정] 대화용 기억 인출 기능 (쿼리 단순화 및 안정화)
-def get_analyzed_ticker_list(days=7):
+# [수정] 대화용 기억 인출 기능 (쿼리 논리 수정 및 전체 조회)
+def get_analyzed_ticker_list(days=None):
     """
-    최근 분석된 기록이 있는 종목들의 티커 리스트 반환.
-    날짜 파싱 오류를 방지하기 위해 정렬(ORDER BY) 기반으로 최근 20개를 가져옵니다.
+    분석된 기록이 있는 모든 종목들의 티커 리스트 반환.
+    GROUP BY를 사용하여 중복을 제거하고, 최근 활동 순으로 정렬합니다.
     """
     client = get_client()
     if not client: return []
     
-    # 수정된 쿼리: 날짜 계산 대신 최근 로그 순으로 정렬하여 상위 20개 추출
+    # 수정된 쿼리: DISTINCT 대신 GROUP BY 사용
+    # MAX(log_date)를 기준으로 정렬하여 가장 최근에 본 종목이 먼저 오도록 함
+    # LIMIT 제거: 모든 종목 조회
     query = f"""
-        SELECT DISTINCT ticker 
+        SELECT ticker
         FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
-        ORDER BY log_date DESC
-        LIMIT 20
+        GROUP BY ticker
+        ORDER BY MAX(log_date) DESC
     """
     try:
         results = list(client.query(query).result())
         return [row.ticker for row in results]
     except Exception as e:
-        # 오류 발생 시 콘솔에 원인 출력 (디버깅용)
         print(f" [BQ Error] 종목 리스트 조회 실패: {e}")
         return []
 
@@ -89,7 +89,6 @@ def save_profile(profile_data):
     
     errors = client.insert_rows_json(table_ref, rows)
     if not errors:
-        # 프로필 저장 성공 로그 (필요시 주석 처리 가능)
         pass 
     else:
         print(f" [BQ Error] 프로필 저장 실패: {errors}")
