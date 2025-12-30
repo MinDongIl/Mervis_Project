@@ -35,7 +35,7 @@ def run_system():
         print(f"\n[{mode_name} 메인 메뉴]")
         print(" 1. 전체 시장 자동 스캔 (Auto Scan)")
         print(" 2. 특정 종목 검색 (Sniper Search)")
-        print(" 3. 대화 모드 (Free Talk) [NEW]")
+        print(" 3. 대화 모드 (Free Talk)")
         print(" 4. 종료 (Exit)")
         
         menu = input(">> 입력: ")
