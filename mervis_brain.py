@@ -13,22 +13,17 @@ import mervis_bigquery # [NEW] BigQuery 모듈 연결
 
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
 
-# [수정] BigQuery에서 기억을 불러오도록 변경 (기존 JSON 방식 대체)
+# [기존 유지] BigQuery에서 기억 불러오기
 def load_memory(ticker):
-    # mervis_bigquery 모듈을 통해 최근 기록 조회
     memory = mervis_bigquery.get_recent_memory(ticker)
     if memory:
         return memory
     return None
 
-# [수정] BigQuery에 기억을 저장하도록 변경
+# [기존 유지] BigQuery에 기억 저장하기
 def save_memory(ticker, price, report, news_data):
     if "전략:" not in report: return
-    
-    # 현재 모드(REAL/MOCK) 확인
     mode = mervis_state.get_mode()
-    
-    # BigQuery에 적재 (뉴스 데이터 포함)
     mervis_bigquery.save_log(ticker, mode, price, report, news_data)
 
 # [기존 유지] 데이터 요약
@@ -60,7 +55,7 @@ def summarize_data(raw_data, period_name, limit=10):
     
     return "\n".join(summary)
 
-# [기존 유지] 프롬프트 생성 (뉴스 데이터 포함)
+# [업데이트] 거래량 정보(volume_info) 인자 추가 및 프롬프트 반영
 def get_strategy_report(ticker, chart_data_set, is_open, past_memory, news_data):
     daily_txt = summarize_data(chart_data_set['daily'], "Daily", 10)
     weekly_txt = summarize_data(chart_data_set['weekly'], "Weekly", 8)
@@ -68,6 +63,8 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory, news_data)
     yearly_txt = summarize_data(chart_data_set['yearly'], "Yearly", 24)
 
     current_price = chart_data_set['current_price']
+    # [V11.6 NEW] 거래량 정보 가져오기
+    volume_info = chart_data_set.get('volume_info', 'Volume: Data Unavailable')
     
     user_profile = mervis_profile.get_user_profile()
     profile_str = json.dumps(user_profile, indent=2, ensure_ascii=False)
@@ -89,7 +86,7 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory, news_data)
     1. Analyze trend (Bullish/Bearish).
     2. Check volatility.
     3. Identify Support & Resistance.
-    4. Analyze Volume.
+    4. **Analyze Volume**: Refer to the provided 'Volume Data'. If real-time volume is missing, use the 'Last Close Volume' as a proxy for liquidity.
     5. Check Chart Patterns.
     6. **Analyze News/Events**: MUST incorporate the provided [Recent News & Issues] into the strategy.
     7. Market Sentiment.
@@ -108,12 +105,13 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory, news_data)
     20. Key Technical Indicators.
     """
 
-    # [기존 유지] 뉴스 섹션이 포함된 프롬프트
+    # [업데이트] 거래량 정보({volume_info})가 포함된 프롬프트
     prompt = f"""
     Role: AI Investment Partner 'Mervis'.
     {status_msg}
     
     Target: {ticker} (Current Price: ${current_price})
+    {volume_info}
     
     [User Profile (Target Persona)]
     {profile_str}
@@ -161,7 +159,7 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory, news_data)
     except Exception as e:
         return f"전략: 분석불가\n코멘트: Error generating content - {e}"
 
-# [기존 유지 + BigQuery 저장 호출]
+# [업데이트] 거래량 보정 로직 추가
 def analyze_stock(item):
     ticker = item['code']
     price = item.get('price', 0)
@@ -174,35 +172,48 @@ def analyze_stock(item):
     
     if not d_data: return None
 
+    # [V11.6 NEW] 데이터 보정용 최신 일봉
+    latest_daily = d_data[0]
+
+    # 1. 가격 보정
     if price == 0 and d_data:
         try:
-            latest = d_data[0]
-            p_val = latest.get('clos') or latest.get('price') or latest.get('last')
+            p_val = latest_daily.get('clos') or latest_daily.get('price') or latest_daily.get('last')
             if p_val: price = float(p_val)
         except: pass
+
+    # 2. 거래량 보정 (Fallback Logic)
+    volume_info = "Volume Data: Real-time volume unavailable."
+    try:
+        # KIS 일봉 데이터에서 누적 거래량(acml_vol) 확인
+        last_vol = latest_daily.get('acml_vol') or latest_daily.get('vol')
+        if last_vol:
+             volume_info = f"Volume Data: Real-time unavailable. Reference Last Close Volume: {last_vol}"
+    except:
+        pass
 
     chart_set = {
         'daily': d_data,
         'weekly': w_data,
         'monthly': m_data,
         'yearly': y_data,
-        'current_price': price
+        'current_price': price,
+        'volume_info': volume_info # [NEW] 프롬프트로 전달
     }
     
-    # [기존 유지] 실시간 뉴스 수집
     print(f" [News] Fetching latest info for {ticker}...", end="")
     news_data = mervis_news.get_stock_news(ticker)
     
     is_open = kis_scan.is_market_open()
     
-    # [수정] BigQuery에서 로드
+    # BigQuery에서 로드
     past_memory = load_memory(ticker)
     
-    # [기존 유지] 뉴스 데이터 전달하여 분석
+    # 분석 요청
     report = get_strategy_report(ticker, chart_set, is_open, past_memory, news_data)
     
     if "전략:" in report:
-        # [수정] BigQuery에 저장 (가격과 뉴스데이터도 함께 저장)
+        # BigQuery에 저장
         save_memory(ticker, price, report, news_data)
         print(" [DB] Saved to BigQuery.")
     
