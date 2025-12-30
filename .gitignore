@@ -12,6 +12,7 @@ mervis_token_cache.json
 # target_codes.txt
 
 # 보안 파일 (절대 업로드 금지)
+KIS_Developers_KEY.txt
 secret.py
 mervis_token_cache.json
 mervis_history.json
