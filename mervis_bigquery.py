@@ -8,7 +8,7 @@ from datetime import datetime
 KEY_PATH = "service_account.json"
 DATASET_ID = "mervis_db"
 TABLE_HISTORY = "trade_history"
-TABLE_USER = "user_info" # [NEW] 사용자 정보 테이블
+TABLE_USER = "user_info" 
 
 def get_client():
     if not os.path.exists(KEY_PATH):
@@ -44,15 +44,30 @@ def get_recent_memory(ticker):
         if results: return {"date": results[0].log_date.strftime("%Y-%m-%d %H:%M"), "report": results[0].report}
     except: return None
 
-# --- [NEW] 사용자 프로필 관련 ---
+# --- [NEW] 대화용 기억 인출 기능 ---
+def get_analyzed_ticker_list(days=7):
+    """최근 N일 이내에 분석된 기록이 있는 종목들의 티커 리스트 반환"""
+    client = get_client()
+    if not client: return []
+    
+    query = f"""
+        SELECT DISTINCT ticker 
+        FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
+        WHERE PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', log_date) >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL {days} DAY)
+    """
+    try:
+        results = list(client.query(query).result())
+        return [row.ticker for row in results]
+    except:
+        return []
+
+# --- [기존] 사용자 프로필 관련 ---
 def save_profile(profile_data):
-    """사용자 프로필(JSON)을 BigQuery에 저장"""
     client = get_client()
     if not client: return
 
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_USER}"
     
-    # JSON 객체를 문자열로 변환하여 저장
     profile_str = json.dumps(profile_data, ensure_ascii=False)
     updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -65,7 +80,6 @@ def save_profile(profile_data):
         print(f" [BQ Error] 프로필 저장 실패: {errors}")
 
 def get_profile():
-    """BigQuery에서 가장 최신 사용자 프로필을 로드"""
     client = get_client()
     if not client: return None
     
@@ -76,7 +90,6 @@ def get_profile():
     try:
         results = list(client.query(query).result())
         if results:
-            # 저장된 JSON 문자열을 다시 객체로 변환
             return json.loads(results[0].profile_json)
     except Exception as e:
         print(f" [BQ Error] 프로필 로드 실패: {e}")
