@@ -2,10 +2,13 @@ import requests
 import secret
 import kis_auth
 import mervis_state
-import sys
+import time 
 
 # 공통 차트 데이터 요청 함수
 def _fetch_chart(ticker, gubn):
+    # API 호출 전 잠시 대기 (모의투자 서버 부하 방지)
+    time.sleep(0.2)
+    
     token = kis_auth.get_access_token()
     if not token: 
         print(f"[Chart] Error: No token found.")
@@ -49,9 +52,10 @@ def _fetch_chart(ticker, gubn):
             res = requests.get(url, headers=headers, params=params, timeout=5)
             data = res.json()
             
-            # API 호출 실패 시 로그 출력
             if data['rt_cd'] != '0':
-                print(f"[API Fail] {ticker}({exc}) GUBN:{gubn} -> {data['msg1']}")
+                # 에러 발생 시 로그 출력 (단, 잦은 에러는 무시 가능)
+                # print(f"[API Fail] {ticker}({exc}) GUBN:{gubn} -> {data['msg1']}")
+                pass
             
             if data['rt_cd'] == '0' and len(data['output2']) > 0:
                 return data['output2']
@@ -60,10 +64,9 @@ def _fetch_chart(ticker, gubn):
             print(f"[Network Error] {ticker}: {e}")
             continue
     
-    print(f"[Final Fail] Failed to fetch data for {ticker}. (GUBN: {gubn})")     
+    # 실패 로그 최소화
+    # print(f"[Final Fail] Failed to fetch data for {ticker}. (GUBN: {gubn})")     
     return None
-
-# 공개 함수
 
 def get_daily_chart(ticker):
     return _fetch_chart(ticker, "0")
@@ -75,7 +78,4 @@ def get_monthly_chart(ticker):
     return _fetch_chart(ticker, "2")
 
 def get_yearly_chart(ticker):
-    return _fetch_chart(ticker, "2")
-
-def get_daily_price(ticker):
-    return get_daily_chart(ticker)
+    return _fetch_chart(ticker, "2") # 년봉은 월봉 API 파라미터 활용 가능 여부 확인 필요하나 일단 유지

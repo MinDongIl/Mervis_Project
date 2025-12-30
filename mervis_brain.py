@@ -6,54 +6,41 @@ import kis_scan
 import json
 import os
 from datetime import datetime
+import mervis_profile
+import mervis_state 
+import mervis_news     # [기존 유지] 뉴스 모듈
+import mervis_bigquery # [NEW] BigQuery 모듈 연결
 
-# Google GenAI Client
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
-MEMORY_FILE = "mervis_history.json"
 
-# Load past memory
+# [수정] BigQuery에서 기억을 불러오도록 변경 (기존 JSON 방식 대체)
 def load_memory(ticker):
-    if not os.path.exists(MEMORY_FILE): return None
-    try:
-        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if ticker in data and data[ticker]: return data[ticker][-1]
-    except: return None
+    # mervis_bigquery 모듈을 통해 최근 기록 조회
+    memory = mervis_bigquery.get_recent_memory(ticker)
+    if memory:
+        return memory
     return None
 
-# Save current analysis to memory
-def save_memory(ticker, report):
+# [수정] BigQuery에 기억을 저장하도록 변경
+def save_memory(ticker, price, report, news_data):
     if "전략:" not in report: return
-    today = datetime.now().strftime("%Y-%m-%d %H:%M")
-    entry = {"date": today, "report": report}
     
-    data = {}
-    if os.path.exists(MEMORY_FILE):
-        try:
-            with open(MEMORY_FILE, "r", encoding="utf-8") as f: data = json.load(f)
-        except: data = {}
+    # 현재 모드(REAL/MOCK) 확인
+    mode = mervis_state.get_mode()
     
-    if ticker not in data: data[ticker] = []
-    data[ticker].append(entry)
-    
-    # Limit memory storage to last 30 items
-    if len(data[ticker]) > 30: data[ticker] = data[ticker][-30:]
-        
-    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    # BigQuery에 적재 (뉴스 데이터 포함)
+    mervis_bigquery.save_log(ticker, mode, price, report, news_data)
 
-# Summarize raw list data into string
+# [기존 유지] 데이터 요약
 def summarize_data(raw_data, period_name, limit=10):
     if not raw_data: return f"[{period_name}] No Data available."
     
     df = pd.DataFrame(raw_data)
     
-    # Normalize date column (xymd -> cymd)
     if 'xymd' in df.columns:
         df.rename(columns={'xymd': 'cymd'}, inplace=True)
     
     try:
-        # Check essential columns
         if 'cymd' not in df.columns:
             return f"[{period_name}] Error: Date column missing. Keys: {list(df.columns)}"
             
@@ -64,7 +51,6 @@ def summarize_data(raw_data, period_name, limit=10):
     except Exception as e:
         return f"[{period_name}] Data Parsing Error: {e}"
 
-    # Sort descending to slice, then reverse for display
     df = df.head(limit).iloc[::-1]
     
     summary = [f"[{period_name} Trend]"]
@@ -74,8 +60,8 @@ def summarize_data(raw_data, period_name, limit=10):
     
     return "\n".join(summary)
 
-# Generate Prompt and Call Gemini
-def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
+# [기존 유지] 프롬프트 생성 (뉴스 데이터 포함)
+def get_strategy_report(ticker, chart_data_set, is_open, past_memory, news_data):
     daily_txt = summarize_data(chart_data_set['daily'], "Daily", 10)
     weekly_txt = summarize_data(chart_data_set['weekly'], "Weekly", 8)
     monthly_txt = summarize_data(chart_data_set['monthly'], "Monthly", 12)
@@ -83,6 +69,9 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
 
     current_price = chart_data_set['current_price']
     
+    user_profile = mervis_profile.get_user_profile()
+    profile_str = json.dumps(user_profile, indent=2, ensure_ascii=False)
+
     mem_ctx = ""
     if past_memory:
         mem_ctx = f"[Past Memory ({past_memory['date']})]\n{past_memory['report']}\n\n[Instruction] Review the past prediction against current data."
@@ -96,14 +85,13 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
         status_msg = "Market Status: CLOSED (Post-Market)"
         mission = "Analyze long-term trends and prepare a strategy for the next open."
 
-    # 20 Analysis Guidelines
     guidelines = """
     1. Analyze trend (Bullish/Bearish).
     2. Check volatility.
     3. Identify Support & Resistance.
     4. Analyze Volume.
     5. Check Chart Patterns.
-    6. Consider News/Events (Infer from data).
+    6. **Analyze News/Events**: MUST incorporate the provided [Recent News & Issues] into the strategy.
     7. Market Sentiment.
     8. Investor Psychology.
     9. Compare with Peers.
@@ -120,11 +108,18 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
     20. Key Technical Indicators.
     """
 
+    # [기존 유지] 뉴스 섹션이 포함된 프롬프트
     prompt = f"""
     Role: AI Investment Partner 'Mervis'.
     {status_msg}
     
     Target: {ticker} (Current Price: ${current_price})
+    
+    [User Profile (Target Persona)]
+    {profile_str}
+
+    [Recent News & Issues (Real-time)]
+    {news_data}
 
     [Timeframe Data]
     1. {yearly_txt}
@@ -143,7 +138,11 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
     [Requirements]
     1. Trend Analysis: Synthesize Year/Month/Day trends.
     2. Self-Reflection: Explicitly evaluate past memory accuracy.
-    3. Strategy: Define specific Buy/Target/Stop prices.
+    3. **Personalization**: Check if this stock aligns with the [User Profile]. 
+       - If the user is 'Conservative' and the stock is highly volatile, provide a WARNING.
+       - If the stock matches the user's 'Goals', highlight it.
+    4. **News Integration**: You MUST mention specific keywords from the [Recent News] to justify your decision.
+    5. Strategy: Define specific Buy/Target/Stop prices.
 
     [Output Format]
     전략: (매수추천 / 관망 / 매도권고 / 매수대기)
@@ -153,14 +152,8 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
     기간: (e.g., 1 week)
     수익률: (e.g., 5%)
     확률: (e.g., 70%)
-    코멘트: (Detailed analysis in Korean, citing the 4-timeframe data and guidelines.)
+    코멘트: (Detailed analysis in Korean. Include 'News Analysis' and 'Profile Match' sections.)
     """
-    
-    # [Debug] Save the actual prompt to file for verification
-    try:
-        with open(f"debug_prompt_{ticker}.txt", "w", encoding="utf-8") as f:
-            f.write(prompt)
-    except: pass
     
     try:
         res = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
@@ -168,12 +161,12 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory):
     except Exception as e:
         return f"전략: 분석불가\n코멘트: Error generating content - {e}"
 
-# Main Entry Point
+# [기존 유지 + BigQuery 저장 호출]
 def analyze_stock(item):
     ticker = item['code']
     price = item.get('price', 0)
     
-    # Fetch Multi-Timeframe Data
+    # 차트 데이터 수집
     d_data = kis_chart.get_daily_chart(ticker)
     w_data = kis_chart.get_weekly_chart(ticker)
     m_data = kis_chart.get_monthly_chart(ticker)
@@ -181,11 +174,9 @@ def analyze_stock(item):
     
     if not d_data: return None
 
-    # Update current price from latest data if needed
     if price == 0 and d_data:
         try:
             latest = d_data[0]
-            # Handle both 'clos' and 'price' keys
             p_val = latest.get('clos') or latest.get('price') or latest.get('last')
             if p_val: price = float(p_val)
         except: pass
@@ -198,13 +189,22 @@ def analyze_stock(item):
         'current_price': price
     }
     
+    # [기존 유지] 실시간 뉴스 수집
+    print(f" [News] Fetching latest info for {ticker}...", end="")
+    news_data = mervis_news.get_stock_news(ticker)
+    
     is_open = kis_scan.is_market_open()
+    
+    # [수정] BigQuery에서 로드
     past_memory = load_memory(ticker)
     
-    report = get_strategy_report(ticker, chart_set, is_open, past_memory)
+    # [기존 유지] 뉴스 데이터 전달하여 분석
+    report = get_strategy_report(ticker, chart_set, is_open, past_memory, news_data)
     
     if "전략:" in report:
-        save_memory(ticker, report)
+        # [수정] BigQuery에 저장 (가격과 뉴스데이터도 함께 저장)
+        save_memory(ticker, price, report, news_data)
+        print(" [DB] Saved to BigQuery.")
     
     return {
         "code": ticker,

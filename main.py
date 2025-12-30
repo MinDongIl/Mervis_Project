@@ -1,13 +1,26 @@
+print("--- Mervis Loading... ---")
 import kis_scan
 import mervis_brain
 import mervis_ai
 import mervis_state
 import time
-import sys  # [추가] 강제 종료를 위해 필요
+import sys
+import mervis_profile
 
 def run_system():
     print("==================================================")
-    print(" [MERVIS] Intelligent Investment System V8.2")
+    print(" [MERVIS] Intelligent Investment System V11.0")
+    print(" [Feature] Real-time News & Sniper Mode Enabled")
+    print("==================================================")
+    
+    try:
+        profile = mervis_profile.get_user_profile()
+        style = profile.get('investment_style', 'Unknown')
+        updated = profile.get('last_updated', 'N/A')
+        print(f" [User Profile] Style: '{style}' | Updated: {updated}")
+    except Exception as e:
+        print(f" [Warning] Profile load failed: {e}")
+
     print("==================================================")
     print(" [1] 실전 모드 (Real)")
     print(" [2] 모의 모드 (Mock)")
@@ -19,57 +32,80 @@ def run_system():
     print(f"\n[시스템] '{mode_name}' 모드로 시작합니다.")
     
     while True:
-        results = [] # 변수 선언 위치 수정 (오류 방지)
+        # [NEW] 메뉴 선택 기능 추가
+        print(f"\n[{mode_name} 메인 메뉴]")
+        print(" 1. 전체 시장 자동 스캔 (Auto Scan)")
+        print(" 2. 특정 종목 검색 (Sniper Search)")
+        print(" 3. 종료 (Exit)")
         
-        try:
-            targets = kis_scan.get_dynamic_targets()
+        menu = input(">> 입력: ")
+        
+        results = []
+        
+        if menu == '1':
+            try:
+                targets = kis_scan.get_dynamic_targets()
+                
+                if not targets:
+                    print("[대기] 분석 대상 없음. 5초 후 재시도.")
+                    time.sleep(5)
+                    continue
+                    
+                print(f"\n[머비스] 총 {len(targets)}개 종목 분석 시작. (중단: Ctrl+C)")
+                
+                for i, item in enumerate(targets):
+                    print(f"[{i+1}/{len(targets)}] {item['code']} 분석 중...", end="")
+                    sys.stdout.flush()
+                    
+                    res = mervis_brain.analyze_stock(item)
+                    
+                    if res:
+                        results.append(res)
+                        print(" -> [완료]")
+                    else:
+                        print(" -> [실패]")
+            except KeyboardInterrupt:
+                print("\n[중단] 스캔을 멈춥니다.")
+        
+        elif menu == '2':
+            # [NEW] 특정 종목 수동 분석 로직
+            code = input(">> 분석할 종목 티커 입력 (예: MU, TSLA): ").upper().strip()
+            if not code: continue
             
-            if not targets:
-                print("[대기] 분석 대상 없음. 5초 후 재시도.")
-                time.sleep(5)
-                continue
-                
-            print(f"\n[머비스] 총 {len(targets)}개 종목 분석 시작. (중단: Ctrl+C)")
+            print(f"[머비스] '{code}' 정밀 분석 시작...", end="")
+            sys.stdout.flush()
             
-            for i, item in enumerate(targets):
-                print(f"[{i+1}/{len(targets)}] {item['code']} 분석 중...", end="")
-                
-                res = mervis_brain.analyze_stock(item)
-                
-                if res:
-                    results.append(res)
-                    print(" -> [완료]")
-                else:
-                    print(" -> [실패]")
-                
-        except KeyboardInterrupt:
-            # [수정된 부분] 여기서 종료 여부를 확실히 묻습니다.
-            print("\n\n[일시정지] 사용자 중단 명령이 감지되었습니다.")
-            choice = input(">> 프로그램을 완전히 종료하시겠습니까? (y=종료 / n=상담이동): ")
+            # 가상의 item 생성
+            target_item = {"code": code, "name": "Manual Search", "price": 0}
+            res = mervis_brain.analyze_stock(target_item)
             
-            if choice.lower() == 'y':
-                print("[시스템] 프로그램을 안전하게 종료합니다.")
-                sys.exit(0) # 강제 종료
+            if res:
+                results.append(res)
+                print(" -> [완료]")
             else:
-                print("[시스템] 현재까지 분석된 데이터로 상담을 시작합니다.")
+                print(" -> [실패] 티커를 확인하거나 데이터를 가져올 수 없습니다.")
+
+        elif menu == '3':
+            print("[시스템] 프로그램을 종료합니다.")
+            sys.exit(0)
+            
+        else:
+            print("[알림] 올바른 메뉴를 선택해주세요.")
+            continue
         
-        # 분석 결과가 하나도 없으면 다시 스캔
         if not results:
             continue
         
+        # 분석 결과 리포트 생성 및 상담
         full_report = f"[{mode_name} 리포트]\n"
         for r in results:
             full_report += f"[{r['code']}]: {r['report']}\n---\n"
             
-        # 상담 모드 실행
         act = mervis_ai.start_consulting(full_report)
         
         if act == "EXIT":
             print("[시스템] 프로그램을 종료합니다.")
-            sys.exit(0) # 강제 종료
-        elif act == "SCAN":
-            print("[시스템] 다시 시장을 스캔합니다.")
-            continue
+            sys.exit(0)
 
 if __name__ == "__main__":
     run_system()
