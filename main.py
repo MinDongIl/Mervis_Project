@@ -8,9 +8,9 @@ import sys
 import mervis_profile
 
 def run_system():
+    # [수정 1] 배너 간소화
     print("==================================================")
-    print(" [MERVIS] Intelligent Investment System V11.0")
-    print(" [Feature] Real-time News & Sniper Mode Enabled")
+    print(" [MERVIS] System Online")
     print("==================================================")
     
     try:
@@ -32,11 +32,11 @@ def run_system():
     print(f"\n[시스템] '{mode_name}' 모드로 시작합니다.")
     
     while True:
-        # [NEW] 메뉴 선택 기능 추가
         print(f"\n[{mode_name} 메인 메뉴]")
         print(" 1. 전체 시장 자동 스캔 (Auto Scan)")
         print(" 2. 특정 종목 검색 (Sniper Search)")
-        print(" 3. 종료 (Exit)")
+        print(" 3. 대화 모드 (Free Talk) [NEW]")
+        print(" 4. 종료 (Exit)")
         
         menu = input(">> 입력: ")
         
@@ -68,14 +68,12 @@ def run_system():
                 print("\n[중단] 스캔을 멈춥니다.")
         
         elif menu == '2':
-            # [NEW] 특정 종목 수동 분석 로직
-            code = input(">> 분석할 종목 티커 입력 (예: MU, TSLA): ").upper().strip()
+            code = input(">> 분석할 종목 티커 입력 : ").upper().strip()
             if not code: continue
             
             print(f"[머비스] '{code}' 정밀 분석 시작...", end="")
             sys.stdout.flush()
             
-            # 가상의 item 생성
             target_item = {"code": code, "name": "Manual Search", "price": 0}
             res = mervis_brain.analyze_stock(target_item)
             
@@ -85,7 +83,18 @@ def run_system():
             else:
                 print(" -> [실패] 티커를 확인하거나 데이터를 가져올 수 없습니다.")
 
+        # [수정 2] 대화 모드 (데이터 분석 없이 바로 상담 진입)
         elif menu == '3':
+            print("[머비스] 대화 모드로 진입합니다. (종료: 'exit')")
+            # 분석 리포트 대신 대화 모드임을 알리는 컨텍스트 전달
+            context = "[System Info] User entered 'Free Talk' mode without new market data scan. Focus on consulting, profile review, or general investment philosophy."
+            act = mervis_ai.start_consulting(context)
+            if act == "EXIT":
+                print("[시스템] 프로그램을 종료합니다.")
+                sys.exit(0)
+            continue # 대화 끝나면 다시 메뉴로
+
+        elif menu == '4':
             print("[시스템] 프로그램을 종료합니다.")
             sys.exit(0)
             
@@ -93,10 +102,10 @@ def run_system():
             print("[알림] 올바른 메뉴를 선택해주세요.")
             continue
         
+        # 1, 2번 메뉴 실행 결과가 있을 때만 상담 진행
         if not results:
             continue
         
-        # 분석 결과 리포트 생성 및 상담
         full_report = f"[{mode_name} 리포트]\n"
         for r in results:
             full_report += f"[{r['code']}]: {r['report']}\n---\n"
