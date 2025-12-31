@@ -3,6 +3,7 @@ from google.oauth2 import service_account
 import os
 import json
 from datetime import datetime
+import mervis_state  # 모드 확인을 위해 추가
 
 # 설정
 KEY_PATH = "service_account.json"
@@ -25,20 +26,26 @@ def save_log(ticker, mode, price, report, news_summary=""):
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_HISTORY}"
     rows = [{
         "log_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticker": ticker, "mode": mode, "price": price,
-        "report": report, "news_summary": news_summary,
+        "ticker": ticker, 
+        "mode": mode,  # REAL 또는 MOCK 저장
+        "price": price,
+        "report": report, 
+        "news_summary": news_summary,
         "strategy_result": "WAITING"
     }]
     client.insert_rows_json(table_ref, rows)
 
-# [수정] 개별 기억 조회 (안정성 강화 유지)
+# [V12.1 수정] 현재 모드에 맞는 최근 기억 1개 조회
 def get_recent_memory(ticker):
     client = get_client()
     if not client: return None
     
+    current_mode = mervis_state.get_mode() # 현재 모드 (REAL/MOCK)
+    
     query = f"""
         SELECT report, log_date FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
-        WHERE ticker = '{ticker}' ORDER BY log_date DESC LIMIT 1
+        WHERE ticker = '{ticker}' AND mode = '{current_mode}' 
+        ORDER BY log_date DESC LIMIT 1
     """
     try:
         results = list(client.query(query).result())
@@ -46,41 +53,40 @@ def get_recent_memory(ticker):
             date_str = str(results[0].log_date)
             return {"date": date_str, "report": results[0].report}
     except Exception as e:
-        print(f" [BQ Error] 개별 기억 조회 실패 ({ticker}): {e}")
+        print(f" [BQ Error] 기억 조회 실패 ({ticker}/{current_mode}): {e}")
         return None
     return None
 
-# [V12.0 추가] 복기 학습을 위한 다중 기억 조회 (최근 3개 리포트)
+# [V12.1 추가] 현재 모드에 맞는 다중 기억 조회 (최근 3개)
 def get_multi_memories(ticker, limit=3):
     client = get_client()
     if not client: return []
     
+    current_mode = mervis_state.get_mode()
+    
     query = f"""
         SELECT report, log_date, price FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
-        WHERE ticker = '{ticker}' ORDER BY log_date DESC LIMIT {limit}
+        WHERE ticker = '{ticker}' AND mode = '{current_mode}' 
+        ORDER BY log_date DESC LIMIT {limit}
     """
     try:
         results = list(client.query(query).result())
         return [{"date": str(row.log_date), "report": row.report, "price": row.price} for row in results]
     except Exception as e:
-        print(f" [BQ Error] 다중 기억 조회 실패 ({ticker}): {e}")
+        print(f" [BQ Error] 다중 기억 조회 실패 ({ticker}/{current_mode}): {e}")
         return []
 
-# [수정] 대화용 기억 인출 기능 (쿼리 논리 수정 및 전체 조회)
-def get_analyzed_ticker_list(days=None):
-    """
-    분석된 기록이 있는 모든 종목들의 티커 리스트 반환.
-    GROUP BY를 사용하여 중복을 제거하고, 최근 활동 순으로 정렬합니다.
-    """
+# [수정] 현재 모드에서 분석된 종목 리스트만 반환
+def get_analyzed_ticker_list():
     client = get_client()
     if not client: return []
     
-    # 수정된 쿼리: DISTINCT 대신 GROUP BY 사용
-    # MAX(log_date)를 기준으로 정렬하여 가장 최근에 본 종목이 먼저 오도록 함
-    # LIMIT 제거: 모든 종목 조회
+    current_mode = mervis_state.get_mode()
+    
     query = f"""
         SELECT ticker
         FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
+        WHERE mode = '{current_mode}'
         GROUP BY ticker
         ORDER BY MAX(log_date) DESC
     """
@@ -95,24 +101,15 @@ def get_analyzed_ticker_list(days=None):
 def save_profile(profile_data):
     client = get_client()
     if not client: return
-
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_USER}"
-    
     profile_str = json.dumps(profile_data, ensure_ascii=False)
     updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
     rows = [{"updated_at": updated_at, "profile_json": profile_str}]
-    
-    errors = client.insert_rows_json(table_ref, rows)
-    if not errors:
-        pass 
-    else:
-        print(f" [BQ Error] 프로필 저장 실패: {errors}")
+    client.insert_rows_json(table_ref, rows)
 
 def get_profile():
     client = get_client()
     if not client: return None
-    
     query = f"""
         SELECT profile_json FROM `{client.project}.{DATASET_ID}.{TABLE_USER}`
         ORDER BY updated_at DESC LIMIT 1
