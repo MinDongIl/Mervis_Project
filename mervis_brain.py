@@ -8,139 +8,121 @@ import os
 from datetime import datetime
 import mervis_profile
 import mervis_state 
-import mervis_news     # [기존 유지] 뉴스 모듈
-import mervis_bigquery # [NEW] BigQuery 모듈 연결
+import mervis_news 
+import mervis_bigquery 
 
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
+# secret.py에 USER_NAME = "이름" 설정 필수
+USER_NAME = getattr(secret, 'USER_NAME', '사용자')
 
-# [기존 유지] BigQuery에서 기억 불러오기
-def load_memory(ticker):
-    memory = mervis_bigquery.get_recent_memory(ticker)
-    if memory:
-        return memory
-    return None
+def load_memories(ticker):
+    memories = mervis_bigquery.get_multi_memories(ticker, limit=3)
+    return memories if memories else []
 
-# [기존 유지] BigQuery에 기억 저장하기
 def save_memory(ticker, price, report, news_data):
     if "전략:" not in report: return
     mode = mervis_state.get_mode()
     mervis_bigquery.save_log(ticker, mode, price, report, news_data)
 
-# [기존 유지] 데이터 요약
 def summarize_data(raw_data, period_name, limit=10):
     if not raw_data: return f"[{period_name}] No Data available."
-    
     df = pd.DataFrame(raw_data)
-    
     if 'xymd' in df.columns:
         df.rename(columns={'xymd': 'cymd'}, inplace=True)
     
     try:
-        if 'cymd' not in df.columns:
-            return f"[{period_name}] Error: Date column missing. Keys: {list(df.columns)}"
-            
-        cols = ['cymd', 'clos']
-        if 'rate' in df.columns: cols.append('rate')
-            
-        for c in cols: df[c] = pd.to_numeric(df[c], errors='coerce')
+        required_cols = ['clos', 'open', 'high', 'low']
+        for col in required_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        df['cymd'] = df['cymd'].astype(str)
     except Exception as e:
         return f"[{period_name}] Data Parsing Error: {e}"
 
     df = df.head(limit).iloc[::-1]
+    summary = [f"[{period_name} Candlestick & Trend]"]
     
-    summary = [f"[{period_name} Trend]"]
+    if len(df) >= 5:
+        ma5 = df['clos'].rolling(window=5).mean().iloc[-1]
+        current_price = df['clos'].iloc[-1]
+        disparity = (current_price / ma5) * 100 if ma5 > 0 else 100
+        summary.append(f"- Technical Insight: 5-Day MA disparity is {disparity:.2f}%")
+
     for _, row in df.iterrows():
-        rate_info = f"({row['rate']}%)" if 'rate' in row else ""
-        summary.append(f"- {row['cymd']}: ${row['clos']} {rate_info}")
+        candle_info = f"O:${row['open']} H:${row['high']} L:${row['low']} C:${row['clos']}"
+        summary.append(f"- {row['cymd']}: {candle_info}")
     
     return "\n".join(summary)
 
-# [업데이트] 거래량 정보(volume_info) 인자 추가 및 프롬프트 반영
-def get_strategy_report(ticker, chart_data_set, is_open, past_memory, news_data):
-    daily_txt = summarize_data(chart_data_set['daily'], "Daily", 10)
+# [V12.0] 공백 기간 동안의 흐름 요약 함수
+def get_gap_analysis(ticker, last_date):
+    gap_data = kis_chart.get_daily_chart(ticker)
+    if not gap_data or not last_date: return "공백기 데이터 없음"
+    
+    clean_last_date = last_date.replace("-", "").replace(" ", "").replace(":", "")[:8]
+    recent_moves = [d for d in gap_data if str(d['xymd']) > clean_last_date]
+    
+    if not recent_moves:
+        return "마지막 분석 이후 특별한 주가 변동 없음."
+    
+    summary = f"마지막 분석({clean_last_date}) 이후 주가 흐름:\n"
+    for d in recent_moves[:7]: # 최근 7일치 요약
+        summary += f"- {d['xymd']}: 종가 ${d['clos']} ({d['rate']}%)\n"
+    return summary
+
+def get_strategy_report(ticker, chart_data_set, is_open, past_memories, news_data):
+    daily_txt = summarize_data(chart_data_set['daily'], "Daily", 15)
     weekly_txt = summarize_data(chart_data_set['weekly'], "Weekly", 8)
     monthly_txt = summarize_data(chart_data_set['monthly'], "Monthly", 12)
-    yearly_txt = summarize_data(chart_data_set['yearly'], "Yearly", 24)
+    yearly_txt = summarize_data(chart_data_set['yearly'], "Recent 12 Months", 12)
 
     current_price = chart_data_set['current_price']
-    # [V11.6 NEW] 거래량 정보 가져오기
     volume_info = chart_data_set.get('volume_info', 'Volume: Data Unavailable')
     
     user_profile = mervis_profile.get_user_profile()
     profile_str = json.dumps(user_profile, indent=2, ensure_ascii=False)
 
-    mem_ctx = ""
-    if past_memory:
-        mem_ctx = f"[Past Memory ({past_memory['date']})]\n{past_memory['report']}\n\n[Instruction] Review the past prediction against current data."
+    # 공백기 분석 포함
+    gap_summary = ""
+    reflection_ctx = ""
+    if past_memories:
+        last_log_date = past_memories[0]['date']
+        gap_summary = get_gap_analysis(ticker, last_log_date)
+        
+        reflection_ctx = "[Self-Correction: Past Performance Review]\n"
+        for i, m in enumerate(past_memories):
+            reflection_ctx += f"{i+1}. Date: {m['date']}, Price: ${m['price']}\n   Report Snippet: {m['report'][:200]}...\n"
     else:
-        mem_ctx = "[No Past Memory]"
+        gap_summary = "이 종목에 대한 첫 번째 분석임."
+        reflection_ctx = "[No past memories.]"
 
-    if is_open:
-        status_msg = "Market Status: OPEN (Live Trading)"
-        mission = "Provide real-time actionable strategy (Entry/Exit/Wait)."
-    else:
-        status_msg = "Market Status: CLOSED (Post-Market)"
-        mission = "Analyze long-term trends and prepare a strategy for the next open."
-
+    status_msg = f"Market Status: {'OPEN' if is_open else 'CLOSED'}"
+    
+    # 가이드라인 (뉴스 및 캔들 패턴 분석 강화)
     guidelines = """
-    1. Analyze trend (Bullish/Bearish).
-    2. Check volatility.
-    3. Identify Support & Resistance.
-    4. **Analyze Volume**: Refer to the provided 'Volume Data'. If real-time volume is missing, use the 'Last Close Volume' as a proxy for liquidity.
-    5. Check Chart Patterns.
-    6. **Analyze News/Events**: MUST incorporate the provided [Recent News & Issues] into the strategy.
-    7. Market Sentiment.
-    8. Investor Psychology.
-    9. Compare with Peers.
-    10. Market Trend.
-    11. Buy/Sell Patterns.
-    12. Correlation with Peers.
-    13. Market Liquidity.
-    14. Institutional Moves.
-    15. Macroeconomics.
-    16. Other Participants.
-    17. Psychological Factors.
-    18. Technical Indicators.
-    19. Other Correlations.
-    20. Key Technical Indicators.
+    1. Analyze Candlestick Patterns: Body/Tail size tells the real story.
+    2. MA Disparity: Check if it's overbought/oversold.
+    3. News Catalyst: Use provided news to explain 'Why' the price moves.
+    4. Decisive Action: No vague talk. If it's bad, say it's bad.
+    5. No disclaimers. Focus on data-driven conviction.
     """
 
-    # [업데이트] 거래량 정보({volume_info})가 포함된 프롬프트
     prompt = f"""
-    Role: AI Investment Partner 'Mervis'.
-    {status_msg}
-    
-    Target: {ticker} (Current Price: ${current_price})
+    Role: Senior Investment Strategist 'Mervis'.
+    {status_msg} | Target: {ticker} (Current Price: ${current_price})
     {volume_info}
     
-    [User Profile (Target Persona)]
-    {profile_str}
-
-    [Recent News & Issues (Real-time)]
-    {news_data}
-
-    [Timeframe Data]
-    1. {yearly_txt}
-    2. {monthly_txt}
-    3. {weekly_txt}
-    4. {daily_txt}
-
-    {mem_ctx}
+    [User Profile] {profile_str}
+    [Background Resume: 공백기 흐름] {gap_summary}
+    [Recent News] {news_data}
+    [Technical Data] {yearly_txt} {monthly_txt} {weekly_txt} {daily_txt}
+    {reflection_ctx}
     
-    [Mission]
-    {mission}
-
-    [Guidelines]
-    {guidelines}
-
     [Requirements]
-    1. Trend Analysis: Synthesize Year/Month/Day trends.
-    2. Self-Reflection: Explicitly evaluate past memory accuracy.
-    3. **Personalization**: Check if this stock aligns with the [User Profile]. 
-       - If the user is 'Conservative' and the stock is highly volatile, provide a WARNING.
-       - If the stock matches the user's 'Goals', highlight it.
-    4. **News Integration**: You MUST mention specific keywords from the [Recent News] to justify your decision.
-    5. Strategy: Define specific Buy/Target/Stop prices.
+    1. 말투: {USER_NAME}에게 똑똑하고 주관 뚜렷한 친구처럼 '반말'로 직설적으로 조언하라.
+    2. 복기: 시작할 때 반드시 공백기 흐름과 지난 예측 성적을 언급하며 인사를 건네라.
+    3. 분석: 캔들 패턴과 이격도를 기반으로 현재 시장의 에너지를 팩트 폭격하라.
+    4. 확률: 과거 실수를 바탕으로 성공 확률을 냉정하게 제시하라.
 
     [Output Format]
     전략: (매수추천 / 관망 / 매도권고 / 매수대기)
@@ -149,22 +131,20 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memory, news_data)
     손절가: (Number only, $)
     기간: (e.g., 1 week)
     수익률: (e.g., 5%)
-    확률: (e.g., 70%)
-    코멘트: (Detailed analysis in Korean. Include 'News Analysis' and 'Profile Match' sections.)
+    확률: (e.g., 85%)
+    코멘트: (Detailed analysis in Korean. Include '자기 복기 결과', '캔들 패턴 분석', '뉴스 결합 판단' 섹션을 포함할 것.)
     """
     
     try:
         res = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
         return res.text.strip()
     except Exception as e:
-        return f"전략: 분석불가\n코멘트: Error generating content - {e}"
+        return f"전략: 분석불가\n코멘트: Error - {e}"
 
-# [업데이트] 거래량 보정 로직 추가
 def analyze_stock(item):
     ticker = item['code']
     price = item.get('price', 0)
     
-    # 차트 데이터 수집
     d_data = kis_chart.get_daily_chart(ticker)
     w_data = kis_chart.get_weekly_chart(ticker)
     m_data = kis_chart.get_monthly_chart(ticker)
@@ -172,53 +152,25 @@ def analyze_stock(item):
     
     if not d_data: return None
 
-    # [V11.6 NEW] 데이터 보정용 최신 일봉
     latest_daily = d_data[0]
+    if price == 0:
+        p_val = latest_daily.get('clos') or latest_daily.get('last')
+        if p_val: price = float(p_val)
 
-    # 1. 가격 보정
-    if price == 0 and d_data:
-        try:
-            p_val = latest_daily.get('clos') or latest_daily.get('price') or latest_daily.get('last')
-            if p_val: price = float(p_val)
-        except: pass
-
-    # 2. 거래량 보정 (Fallback Logic)
-    volume_info = "Volume Data: Real-time volume unavailable."
-    try:
-        # KIS 일봉 데이터에서 누적 거래량(acml_vol) 확인
-        last_vol = latest_daily.get('acml_vol') or latest_daily.get('vol')
-        if last_vol:
-             volume_info = f"Volume Data: Real-time unavailable. Reference Last Close Volume: {last_vol}"
-    except:
-        pass
+    volume_info = f"Volume Data: (Last Close Volume: {latest_daily.get('acml_vol', 'N/A')})"
 
     chart_set = {
-        'daily': d_data,
-        'weekly': w_data,
-        'monthly': m_data,
-        'yearly': y_data,
-        'current_price': price,
-        'volume_info': volume_info # [NEW] 프롬프트로 전달
+        'daily': d_data, 'weekly': w_data, 'monthly': m_data, 'yearly': y_data,
+        'current_price': price, 'volume_info': volume_info
     }
     
-    print(f" [News] Fetching latest info for {ticker}...", end="")
     news_data = mervis_news.get_stock_news(ticker)
-    
     is_open = kis_scan.is_market_open()
+    past_memories = load_memories(ticker)
     
-    # BigQuery에서 로드
-    past_memory = load_memory(ticker)
-    
-    # 분석 요청
-    report = get_strategy_report(ticker, chart_set, is_open, past_memory, news_data)
+    report = get_strategy_report(ticker, chart_set, is_open, past_memories, news_data)
     
     if "전략:" in report:
-        # BigQuery에 저장
         save_memory(ticker, price, report, news_data)
-        print(" [DB] Saved to BigQuery.")
     
-    return {
-        "code": ticker,
-        "price": price,
-        "report": report
-    }
+    return { "code": ticker, "price": price, "report": report }

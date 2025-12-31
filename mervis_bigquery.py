@@ -50,6 +50,22 @@ def get_recent_memory(ticker):
         return None
     return None
 
+# [V12.0 추가] 복기 학습을 위한 다중 기억 조회 (최근 3개 리포트)
+def get_multi_memories(ticker, limit=3):
+    client = get_client()
+    if not client: return []
+    
+    query = f"""
+        SELECT report, log_date, price FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
+        WHERE ticker = '{ticker}' ORDER BY log_date DESC LIMIT {limit}
+    """
+    try:
+        results = list(client.query(query).result())
+        return [{"date": str(row.log_date), "report": row.report, "price": row.price} for row in results]
+    except Exception as e:
+        print(f" [BQ Error] 다중 기억 조회 실패 ({ticker}): {e}")
+        return []
+
 # [수정] 대화용 기억 인출 기능 (쿼리 논리 수정 및 전체 조회)
 def get_analyzed_ticker_list(days=None):
     """

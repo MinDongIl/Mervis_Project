@@ -4,8 +4,8 @@ import kis_auth
 import mervis_state
 import time 
 
-# 공통 차트 데이터 요청 함수
-def _fetch_chart(ticker, gubn):
+# [V12.0] 기준일자(BYMD) 파라미터 대응을 위한 공통 함수 수정
+def _fetch_chart(ticker, gubn, bymd=""):
     # API 호출 전 잠시 대기 (모의투자 서버 부하 방지)
     time.sleep(0.2)
     
@@ -43,7 +43,7 @@ def _fetch_chart(ticker, gubn):
             "EXCD": exc, 
             "SYMB": ticker,
             "GUBN": gubn,
-            "BYMD": "", 
+            "BYMD": bymd, # [V12.0] 특정 날짜 이후 데이터 조회를 위해 사용
             "MODP": "1", 
             "KEYB": ""
         }
@@ -52,30 +52,27 @@ def _fetch_chart(ticker, gubn):
             res = requests.get(url, headers=headers, params=params, timeout=5)
             data = res.json()
             
-            if data['rt_cd'] != '0':
-                # 에러 발생 시 로그 출력 (단, 잦은 에러는 무시 가능)
-                # print(f"[API Fail] {ticker}({exc}) GUBN:{gubn} -> {data['msg1']}")
-                pass
-            
-            if data['rt_cd'] == '0' and len(data['output2']) > 0:
+            if data.get('rt_cd') == '0' and len(data.get('output2', [])) > 0:
                 return data['output2']
                 
         except Exception as e:
-            print(f"[Network Error] {ticker}: {e}")
             continue
     
-    # 실패 로그 최소화
-    # print(f"[Final Fail] Failed to fetch data for {ticker}. (GUBN: {gubn})")     
     return None
 
-def get_daily_chart(ticker):
-    return _fetch_chart(ticker, "0")
+def get_daily_chart(ticker, bymd=""):
+    return _fetch_chart(ticker, "0", bymd)
 
-def get_weekly_chart(ticker):
-    return _fetch_chart(ticker, "1")
+def get_weekly_chart(ticker, bymd=""):
+    return _fetch_chart(ticker, "1", bymd)
 
-def get_monthly_chart(ticker):
-    return _fetch_chart(ticker, "2")
+def get_monthly_chart(ticker, bymd=""):
+    return _fetch_chart(ticker, "2", bymd)
 
-def get_yearly_chart(ticker):
-    return _fetch_chart(ticker, "2") # 년봉은 월봉 API 파라미터 활용 가능 여부 확인 필요하나 일단 유지
+def get_yearly_chart(ticker, bymd=""):
+    # 월봉("2") 데이터를 가져와서 최근 12개월치만 사용
+    data = _fetch_chart(ticker, "2", bymd)
+    if data:
+        # 데이터가 너무 많으면 머비스가 헷갈리므로 최근 12개월(1년)로 제한
+        return data[:12] 
+    return None
