@@ -67,7 +67,7 @@ def run_system():
         print(" 2. 특정 종목 검색 (Sniper Search)")
         print(" 3. 대화 모드 (Free Talk)")
         print(" 4. 종료 (Exit)")
-        print(" 5. 실시간 감시 모드 (Real-time Watch) [NEW]") # [NEW]
+        print(" 5. 실시간 감시 모드 (Real-time Watch)") # [NEW]
         
         menu = input(">> 입력: ")
         

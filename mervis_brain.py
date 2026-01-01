@@ -12,7 +12,7 @@ import mervis_news
 import mervis_bigquery 
 
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
-# secret.py에 USER_NAME = "이름" 설정 필수
+# secret.py에 USER_NAME 설정이 없으면 기본값 사용
 USER_NAME = getattr(secret, 'USER_NAME', '사용자')
 
 def load_memories(ticker):
@@ -54,7 +54,7 @@ def summarize_data(raw_data, period_name, limit=10):
     
     return "\n".join(summary)
 
-# [V12.0] 공백 기간 동안의 흐름 요약 함수
+# 공백 기간 동안의 흐름 요약 함수
 def get_gap_analysis(ticker, last_date):
     gap_data = kis_chart.get_daily_chart(ticker)
     if not gap_data or not last_date: return "공백기 데이터 없음"
@@ -165,7 +165,10 @@ def analyze_stock(item):
     }
     
     news_data = mervis_news.get_stock_news(ticker)
-    is_open = kis_scan.is_market_open()
+    
+    # [수정됨] kis_scan 업데이트에 맞춰 함수명 변경
+    is_open = kis_scan.is_market_open_check()
+    
     past_memories = load_memories(ticker)
     
     report = get_strategy_report(ticker, chart_set, is_open, past_memories, news_data)
