@@ -10,7 +10,7 @@ KEY_PATH = "service_account.json"
 DATASET_ID = "mervis_db"
 TABLE_HISTORY = "trade_history"
 TABLE_USER = "user_info"
-TABLE_TICKERS = "ticker_universe"  # [NEW] 종목 관리 테이블 추가
+TABLE_TICKERS = "ticker_universe"  # [NEW] 종목 관리 테이블
 
 def get_client():
     if not os.path.exists(KEY_PATH):
@@ -21,23 +21,51 @@ def get_client():
 
 # --- [NEW] 종목 DB(Ticker Universe) 관련 기능 ---
 
-# 1. DB에서 조건에 맞는 종목 랜덤 추출
+# 0. DB 최신화 상태 점검 (Smart Auto-Run 용)
+def check_db_freshness():
+    """
+    DB가 오늘 날짜로 업데이트되어 있는지 확인
+    Return: True(최신임), False(구식임/업데이트 필요)
+    """
+    client = get_client()
+    if not client: return False
+    
+    # 아무 종목이나 하나 찍어서 업데이트 날짜 확인
+    query = f"""
+        SELECT updated_at FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
+        LIMIT 1
+    """
+    try:
+        results = list(client.query(query).result())
+        if not results: return False # 데이터 없으면 업데이트 필요
+        
+        # 저장된 날짜 (Timestamp를 문자열로 변환하여 YYYY-MM-DD 비교)
+        last_update = str(results[0].updated_at)[:10] 
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        return last_update == today
+    except:
+        return False
+
+# 1. DB에서 조건에 맞는 우량 종목 랜덤 추출
 def get_tickers_from_db(limit=40, tags=[]):
     client = get_client()
     if not client: return []
     
+    # [핵심] 거래량이 검증된(ACTIVE_HIGH, ACTIVE_MID) 종목만 가져옴 (잡주 제외)
     # 태그(섹터)가 있으면 해당 태그 위주로 검색
     if tags:
         tag_str = ", ".join([f"'{t}'" for t in tags])
         query = f"""
             SELECT ticker, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
-            WHERE sector IN ({tag_str})
+            WHERE sector IN ({tag_str}) AND status IN ('ACTIVE_HIGH', 'ACTIVE_MID', 'ACTIVE')
             ORDER BY RAND() LIMIT {limit}
         """
     else:
-        # 태그 없으면 전체에서 랜덤
+        # 태그 없으면 전체 우량주 중에서 랜덤
         query = f"""
             SELECT ticker, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
+            WHERE status IN ('ACTIVE_HIGH', 'ACTIVE_MID', 'ACTIVE')
             ORDER BY RAND() LIMIT {limit}
         """
         
@@ -46,7 +74,6 @@ def get_tickers_from_db(limit=40, tags=[]):
         # kis_scan에서 사용할 형식으로 변환
         return [{"code": row.ticker, "tag": row.sector} for row in results]
     except Exception as e:
-        # 테이블이 없거나 쿼리 실패 시
         # print(f" [BQ Error] 티커 조회 실패 (DB가 비어있을 수 있음): {e}")
         return []
 
@@ -57,21 +84,20 @@ def seed_ticker_db(ticker_list):
     
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_TICKERS}"
     
-    # 스키마 정의
+    # 스키마 정의 (status, fail_count 포함)
     schema = [
         bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
         bigquery.SchemaField("name", "STRING", mode="NULLABLE"),
-        bigquery.SchemaField("sector", "STRING", mode="NULLABLE"), # 태그 역할
-        bigquery.SchemaField("updated_at", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("sector", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("status", "STRING", mode="NULLABLE"), # ACTIVE_HIGH, MID, BAD
+        bigquery.SchemaField("fail_count", "INTEGER", mode="NULLABLE"),
+        bigquery.SchemaField("updated_at", "TIMESTAMP", mode="NULLABLE"),
     ]
     
     # 테이블 생성 (없으면 생성)
     try:
         client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
     except: pass
-    
-    # 데이터 삽입 전, 중복 방지를 위해 기존 데이터가 있다면 삭제 정책 필요할 수 있음
-    # 여기서는 간단히 '추가' 로직으로 구현 (중복 관리는 추후 보완 가능)
     
     rows = []
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -80,6 +106,8 @@ def seed_ticker_db(ticker_list):
             "ticker": item['code'],
             "name": item.get('name', ''),
             "sector": item.get('tag', 'Unknown'),
+            "status": "ACTIVE", # 초기 상태
+            "fail_count": 0,
             "updated_at": timestamp
         })
         

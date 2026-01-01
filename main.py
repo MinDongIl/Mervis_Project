@@ -6,9 +6,39 @@ import mervis_state
 import time
 import sys
 import mervis_profile
+import mervis_bigquery
+import update_volume_tier
+import kis_websocket # [NEW] 웹소켓 모듈 추가
+
+def system_init():
+    print("==================================================")
+    print(" [MERVIS] System Initialization Check")
+    print("==================================================")
+    
+    # DB 최신화 상태 점검 (Smart Auto-Run)
+    print(" [Check] Checking DB Freshness...", end=" ")
+    is_fresh = mervis_bigquery.check_db_freshness()
+    
+    if is_fresh:
+        print("[PASS] DB is up-to-date.")
+    else:
+        print("[UPDATE REQUIRED]")
+        print("\n [Notice] DB outdated. Running Daily Volume Analysis...")
+        print("          (This may take 1-2 minutes. Please wait...)\n")
+        
+        try:
+            update_volume_tier.update_volume_data()
+            print("\n [System] DB Update Complete. Starting Main System.")
+        except Exception as e:
+            print(f"\n [Warning] Update failed ({e}). Proceeding with existing data.")
+            
+    print("==================================================\n")
 
 def run_system():
-    # [수정 1] 배너 간소화
+    # 1. 시스템 초기화
+    system_init()
+
+    # 2. 메인 화면 출력
     print("==================================================")
     print(" [MERVIS] System Online")
     print("==================================================")
@@ -37,6 +67,7 @@ def run_system():
         print(" 2. 특정 종목 검색 (Sniper Search)")
         print(" 3. 대화 모드 (Free Talk)")
         print(" 4. 종료 (Exit)")
+        print(" 5. 실시간 감시 모드 (Real-time Watch) [NEW]") # [NEW]
         
         menu = input(">> 입력: ")
         
@@ -51,14 +82,12 @@ def run_system():
                     time.sleep(5)
                     continue
                     
-                print(f"\n[머비스] 총 {len(targets)}개 종목 분석 시작. (중단: Ctrl+C)")
+                print(f"\n[머비스] 총 {len(targets)}개 핵심 종목 분석 시작. (중단: Ctrl+C)")
                 
                 for i, item in enumerate(targets):
                     print(f"[{i+1}/{len(targets)}] {item['code']} 분석 중...", end="")
                     sys.stdout.flush()
-                    
                     res = mervis_brain.analyze_stock(item)
-                    
                     if res:
                         results.append(res)
                         print(" -> [완료]")
@@ -70,33 +99,45 @@ def run_system():
         elif menu == '2':
             code = input(">> 분석할 종목 티커 입력 : ").upper().strip()
             if not code: continue
-            
             print(f"[머비스] '{code}' 정밀 분석 시작...", end="")
             sys.stdout.flush()
-            
             target_item = {"code": code, "name": "Manual Search", "price": 0}
             res = mervis_brain.analyze_stock(target_item)
-            
             if res:
                 results.append(res)
                 print(" -> [완료]")
             else:
-                print(" -> [실패] 티커를 확인하거나 데이터를 가져올 수 없습니다.")
+                print(" -> [실패]")
 
-        # [수정 2] 대화 모드 (데이터 분석 없이 바로 상담 진입)
         elif menu == '3':
             print("[머비스] 대화 모드로 진입합니다. (종료: 'exit')")
-            # 분석 리포트 대신 대화 모드임을 알리는 컨텍스트 전달
-            context = "[System Info] User entered 'Free Talk' mode without new market data scan. Focus on consulting, profile review, or general investment philosophy."
+            context = "[System Info] User entered 'Free Talk' mode."
             act = mervis_ai.start_consulting(context)
             if act == "EXIT":
                 print("[시스템] 프로그램을 종료합니다.")
                 sys.exit(0)
-            continue # 대화 끝나면 다시 메뉴로
+            continue 
 
         elif menu == '4':
             print("[시스템] 프로그램을 종료합니다.")
             sys.exit(0)
+
+        # [NEW] 실시간 감시 모드
+        elif menu == '5':
+            print("\n[머비스] 실시간 감시 모드를 준비합니다...")
+            
+            # 1. 감시 대상 로딩 (Scan 모듈 활용)
+            targets = kis_scan.get_dynamic_targets()
+            if not targets:
+                print("[오류] 감시할 대상이 없습니다. DB 상태를 확인하세요.")
+                continue
+                
+            print(f"[시스템] 감시 대상: {len(targets)}개 종목")
+            print("[시스템] 웹소켓 연결 시도 중... (중단: Ctrl+C)")
+            
+            # 2. 웹소켓 실행 (Blocking)
+            kis_websocket.run_monitoring(targets)
+            continue # 감시 끝나면 메뉴로 복귀
             
         else:
             print("[알림] 올바른 메뉴를 선택해주세요.")
