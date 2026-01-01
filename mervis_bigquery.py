@@ -10,7 +10,7 @@ KEY_PATH = "service_account.json"
 DATASET_ID = "mervis_db"
 TABLE_HISTORY = "trade_history"
 TABLE_USER = "user_info"
-TABLE_TICKERS = "ticker_universe"  # [NEW] 종목 관리 테이블
+TABLE_TICKERS = "ticker_universe"
 
 def get_client():
     if not os.path.exists(KEY_PATH):
@@ -47,35 +47,67 @@ def check_db_freshness():
     except:
         return False
 
-# 1. DB에서 조건에 맞는 우량 종목 랜덤 추출
+# 1. DB에서 조건에 맞는 종목 추출 (Core & Satellite 전략 적용)
 def get_tickers_from_db(limit=40, tags=[]):
+    """
+    1차: 태그 검색 시도
+    2차: 실패 시 Core(우량주 30) + Satellite(급등주 10) 혼합 전략 사용
+    """
     client = get_client()
     if not client: return []
     
-    # [핵심] 거래량이 검증된(ACTIVE_HIGH, ACTIVE_MID) 종목만 가져옴 (잡주 제외)
-    # 태그(섹터)가 있으면 해당 태그 위주로 검색
+    results = []
+    
+    # [1차 시도] 태그(User Preference) 기반 검색
     if tags:
         tag_str = ", ".join([f"'{t}'" for t in tags])
         query = f"""
             SELECT ticker, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
-            WHERE sector IN ({tag_str}) AND status IN ('ACTIVE_HIGH', 'ACTIVE_MID', 'ACTIVE')
+            WHERE sector IN ({tag_str}) AND status IN ('ACTIVE_HIGH', 'ACTIVE_MID')
             ORDER BY RAND() LIMIT {limit}
         """
-    else:
-        # 태그 없으면 전체 우량주 중에서 랜덤
-        query = f"""
-            SELECT ticker, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
-            WHERE status IN ('ACTIVE_HIGH', 'ACTIVE_MID', 'ACTIVE')
-            ORDER BY RAND() LIMIT {limit}
-        """
+        try:
+            results = list(client.query(query).result())
+        except Exception as e:
+            print(f" [DB Warning] 태그 검색 에러: {e}")
+            
+    # [2차 시도] 태그 검색 결과가 없거나 태그 미지정 시 -> Core & Satellite 전략
+    if not results:
+        if tags: 
+            print(" [DB] 태그 매칭 종목 없음. 'Core(30) + Satellite(10)' 전략으로 선별합니다.")
+            
+        final_mix = []
         
-    try:
-        results = list(client.query(query).result())
-        # kis_scan에서 사용할 형식으로 변환
-        return [{"code": row.ticker, "tag": row.sector} for row in results]
-    except Exception as e:
-        # print(f" [BQ Error] 티커 조회 실패 (DB가 비어있을 수 있음): {e}")
+        # 1. Core (30개): 거래량 터진 우량주 (ACTIVE_HIGH) 중 랜덤
+        try:
+            query_core = f"""
+                SELECT ticker, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
+                WHERE status = 'ACTIVE_HIGH'
+                ORDER BY RAND() LIMIT 30
+            """
+            core_results = list(client.query(query_core).result())
+            final_mix.extend(core_results)
+        except: pass
+        
+        # 2. Satellite (10개): 전일 등락률(change_rate) 상위 Top 10 (급등주)
+        # ACTIVE_MID 이상인 종목 중에서 선정하여 잡주 제외
+        try:
+            query_sat = f"""
+                SELECT ticker, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
+                WHERE status IN ('ACTIVE_HIGH', 'ACTIVE_MID')
+                ORDER BY change_rate DESC LIMIT 10
+            """
+            sat_results = list(client.query(query_sat).result())
+            final_mix.extend(sat_results)
+        except: pass
+        
+        results = final_mix
+        
+    # 결과 변환
+    if not results:
         return []
+
+    return [{"code": row.ticker, "tag": row.sector} for row in results]
 
 # 2. 종목 리스트 DB에 저장 (초기화 및 업데이트용)
 def seed_ticker_db(ticker_list):
@@ -84,14 +116,16 @@ def seed_ticker_db(ticker_list):
     
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_TICKERS}"
     
-    # 스키마 정의 (status, fail_count 포함)
+    # 스키마 정의 (status, fail_count, change_rate, last_volume 포함)
     schema = [
         bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
         bigquery.SchemaField("name", "STRING", mode="NULLABLE"),
         bigquery.SchemaField("sector", "STRING", mode="NULLABLE"),
         bigquery.SchemaField("status", "STRING", mode="NULLABLE"), # ACTIVE_HIGH, MID, BAD
+        bigquery.SchemaField("change_rate", "FLOAT", mode="NULLABLE"), # [NEW] 등락률
+        bigquery.SchemaField("last_volume", "INTEGER", mode="NULLABLE"), # [NEW] 최근 거래량
         bigquery.SchemaField("fail_count", "INTEGER", mode="NULLABLE"),
-        bigquery.SchemaField("updated_at", "TIMESTAMP", mode="NULLABLE"),
+        bigquery.SchemaField("updated_at", "STRING", mode="NULLABLE"), # TIMESTAMP -> STRING (호환성)
     ]
     
     # 테이블 생성 (없으면 생성)
@@ -107,6 +141,8 @@ def seed_ticker_db(ticker_list):
             "name": item.get('name', ''),
             "sector": item.get('tag', 'Unknown'),
             "status": "ACTIVE", # 초기 상태
+            "change_rate": 0.0,
+            "last_volume": 0,
             "fail_count": 0,
             "updated_at": timestamp
         })
@@ -134,7 +170,9 @@ def save_log(ticker, mode, price, report, news_summary=""):
         "news_summary": news_summary,
         "strategy_result": "WAITING"
     }]
-    client.insert_rows_json(table_ref, rows)
+    try:
+        client.insert_rows_json(table_ref, rows)
+    except: pass
 
 def get_recent_memory(ticker):
     client = get_client()
@@ -202,7 +240,9 @@ def save_profile(profile_data):
     profile_str = json.dumps(profile_data, ensure_ascii=False)
     updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows = [{"updated_at": updated_at, "profile_json": profile_str}]
-    client.insert_rows_json(table_ref, rows)
+    try:
+        client.insert_rows_json(table_ref, rows)
+    except: pass
 
 def get_profile():
     client = get_client()
