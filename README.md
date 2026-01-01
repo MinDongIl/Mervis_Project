@@ -1,4 +1,4 @@
-# MERVIS Project: Intelligent US Stock Investment Partner (V11.6)
+# MERVIS Project: Intelligent US Stock Investment Partner
 
 **Mervis(머비스)**는 Google Gemini API의 강력한 추론 능력과 Google BigQuery의 영구적인 기억 저장소, 그리고 실시간 뉴스 분석 능력을 결합한 '자율 성장형 AI 주식 투자 파트너'입니다.
 
