@@ -8,7 +8,7 @@ import sys
 import mervis_profile
 import mervis_bigquery
 import update_volume_tier
-import kis_websocket # [NEW] 웹소켓 모듈 추가
+import kis_websocket
 
 def system_init():
     print("==================================================")
@@ -122,7 +122,7 @@ def run_system():
             print("[시스템] 프로그램을 종료합니다.")
             sys.exit(0)
 
-        # [NEW] 실시간 감시 모드
+        # 실시간 감시 모드
         elif menu == '5':
             print("\n[머비스] 실시간 감시 모드를 준비합니다...")
             

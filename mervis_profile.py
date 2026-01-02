@@ -8,7 +8,7 @@ import mervis_bigquery
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
 USER_DATA_FILE = "mervis_user_data.json"
 
-# [V13.0] 로컬 파일 초기화 (공통 함수)
+# 로컬 파일 초기화 (공통 함수)
 def _reset_local_file():
     default_data = {
         "investment_style": "Unidentified", 
@@ -22,12 +22,12 @@ def _reset_local_file():
         json.dump(default_data, f, indent=4, ensure_ascii=False)
     return default_data
 
-# [기존] 로컬 데이터 없으면 생성
+# 로컬 데이터 없으면 생성
 def init_user_data():
     if not os.path.exists(USER_DATA_FILE):
         _reset_local_file()
 
-# [V13.0 NEW] 프로필 강제 초기화 함수
+# 프로필 강제 초기화 함수
 def reset_profile():
     # 1. 로컬 파일 초기화
     new_data = _reset_local_file()
@@ -38,7 +38,7 @@ def reset_profile():
     print("[System] User Profile has been completely RESET.")
     return "사용자 프로필이 초기화되었습니다. 새로운 투자 성향을 말씀해 주세요."
 
-# [기존] 프로필 로드
+# 프로필 로드
 def get_user_profile():
     bq_profile = mervis_bigquery.get_profile()
     if bq_profile:
@@ -51,7 +51,7 @@ def get_user_profile():
     except:
         return {}
 
-# [V12.5 유지] 유저 성향에서 '스캔용 키워드' 추출
+# 유저 성향에서 '스캔용 키워드' 추출
 def get_preference_tags():
     """
     유저 프로필을 분석하여 kis_scan에서 사용할 섹터/테마 태그를 반환
@@ -100,9 +100,9 @@ def get_preference_tags():
         
     return list(tags)
 
-# [V13.0 수정] 스마트 프로필 업데이트 (초기화 트리거 추가)
+# 스마트 프로필 업데이트 (초기화 트리거 추가)
 def update_user_profile(interaction_text, action_type="conversation"):
-    # [V13.0] 초기화 명령어 감지
+    # 초기화 명령어 감지
     if "초기화" in interaction_text and "프로필" in interaction_text:
         return reset_profile()
 
@@ -147,7 +147,7 @@ def update_user_profile(interaction_text, action_type="conversation"):
     except Exception as e:
         return f"Failed to update profile: {e}"
 
-# [기존] 일관성 체크
+# 일관성 체크
 def check_consistency(strategy_report):
     profile = get_user_profile()
     prompt = f"""

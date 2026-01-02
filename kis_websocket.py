@@ -2,137 +2,143 @@ import websocket
 import json
 import time
 import threading
-import secret
 import kis_auth
 import mervis_state
 
 # [설정] 미국 주식 실시간 체결가 TR ID
 TR_ID_REAL = "HDFSCNT0" 
-
-# 웹소켓 URL (KIS 가이드 기준)
 WS_URL_REAL = "ws://ops.koreainvestment.com:21000"
 WS_URL_MOCK = "ws://openapivts.koreainvestment.com:21000"
 
+# 글로벌 감시자 인스턴스 (메인에서 제어용)
+_active_watcher = None
+
 class MervisWatcher:
     def __init__(self, target_list):
-        self.target_list = target_list # 감시할 종목 리스트 [{'code': 'AAPL', 'tag': '...'}, ...]
+        self.target_list = target_list
         self.ws = None
         self.ws_key = None
-        self.stop_signal = False
+        self.is_running = False
         
-        # 현재 모드에 따른 URL 설정
         self.mode = mervis_state.get_mode()
         self.base_url = WS_URL_REAL if self.mode == "REAL" else WS_URL_MOCK
         
-        print(f"[Watcher] Initializing WebSocket ({self.mode} Mode)...")
+        # 이전 가격 저장용 (급등락 감지)
+        self.prev_prices = {} 
+
+    def check_signal(self, ticker, price, change_rate):
+        """
+        [Alert System] 실시간 가격 변동에 따른 매수/매도 알림
+        - 현재는 단순 급등락(-3% ~ +3%) 예시
+        - 추후 Brain의 목표가(Target Price)와 연동 가능
+        """
+        try:
+            c_rate = float(change_rate)
+            
+            # [Trigger 1] 급등 알림 (3% 이상)
+            if c_rate >= 3.0:
+                 print(f"\n 🔥 [ALERT] {ticker} 급등 감지! 현재가 ${price} (+{c_rate}%)")
+            
+            # [Trigger 2] 급락 알림 (-3% 이하)
+            elif c_rate <= -3.0:
+                 print(f"\n 💧 [ALERT] {ticker} 급락 주의! 현재가 ${price} ({c_rate}%)")
+                 
+        except: pass
 
     def on_message(self, ws, message):
-        # KIS 웹소켓 데이터는 텍스트 형태가 많음
-        # 데이터 포맷: 0(암호화여부)|TR_ID|데이터개수|데이터본문(aaaa^bbbb^...)
-        
         try:
-            # 첫 메시지(PINGPONG 등) 처리
             if message[0] == '{':
                 data = json.loads(message)
                 if 'header' in data and data['header'].get('tr_id') == 'PINGPONG':
-                    ws.send(message) # Pong 응답
+                    ws.send(message)
                     return
 
             parts = message.split('|')
             if len(parts) > 3:
                 tr_id = parts[1]
-                
                 if tr_id == TR_ID_REAL:
-                    # 데이터 본문 파싱 (구분자: ^)
-                    # [주의] 인덱스는 API 버전에 따라 다를 수 있으나 보통:
-                    # 0:종목코드, 1:체결시간, 2:체결가, 11:체결량 등
                     raw_data = parts[3].split('^')
-                    
                     ticker = raw_data[0]
                     price = float(raw_data[2])
                     vol = raw_data[11]
-                    change_rate = raw_data[4] # 등락률
+                    change_rate = raw_data[4]
                     
-                    # [로그] 너무 빠르면 정신없으므로, 특정 조건(예: 급변)일 때만 찍거나
-                    # 지금은 테스트를 위해 모든 체결 데이터 출력
-                    print(f" [Live] {ticker} : ${price} ({change_rate}%) | Vol: {vol}")
+                    # [Log] 실시간 로그 출력 (백그라운드에서도 보임)
+                    # 너무 빠르면 시끄러우니 간소화된 로그 사용
+                    print(f" [Live] {ticker}: ${price} ({change_rate}%)", end='\r')
                     
-                    # === [매수/매도 로직 연결 포인트] ===
-                    # self.brain.check_price_action(ticker, price)
+                    # [Signal] 알림 체크
+                    self.check_signal(ticker, price, change_rate)
                     
-        except Exception as e:
-            # 데이터 파싱 에러는 빈번할 수 있으므로 치명적이지 않으면 무시
-            pass
+        except: pass
 
     def on_error(self, ws, error):
-        print(f"[Watcher Error] {error}")
+        print(f" [Watcher Error] {error}")
 
     def on_close(self, ws, close_status_code, close_msg):
-        print("[Watcher] Connection Closed.")
+        print("\n [Watcher] Disconnected.")
+        self.is_running = False
 
     def on_open(self, ws):
-        print("[Watcher] Connected! Subscribing to targets...")
+        print("\n [Watcher] Connected! Monitoring started in Background.")
+        self.is_running = True
         
         for item in self.target_list:
             ticker = item['code']
+            tr_key = f"DNAS{ticker}" # 임시: 나스닥 가정
             
-            # [중요] 구독 키(tr_key) 생성
-            # 미국 주식은 "D + 시장구분(NAS/NYS/AMS) + 종목코드" 형식을 씀
-            # DB/Scan에서 시장 정보를 안 가져왔다면, 임시로 주요 거래소 시도
-            # (KIS API는 종목코드만 보내도 되는 경우가 있으나, 정석은 시장구분 포함)
-            
-            # 여기서는 편의상 DB에 시장정보가 없으므로 'DNAS'(나스닥)를 기본으로 붙이거나
-            # yfinance 등으로 시장을 확인해야 함. 
-            # 일단 'DNAS' 접두어 사용 (대부분의 기술주가 나스닥이므로)
-            # 추후 DB에 'market' 컬럼 추가 권장.
-            tr_key = f"DNAS{ticker}" 
-
             req_body = {
-                "header": {
-                    "approval_key": self.ws_key,
-                    "custtype": "P",
-                    "tr_type": "1", # 1: 등록, 2: 해제
-                    "content-type": "utf-8"
-                },
-                "body": {
-                    "input": {
-                        "tr_id": TR_ID_REAL,
-                        "tr_key": tr_key
-                    }
-                }
+                "header": {"approval_key": self.ws_key, "custtype": "P", "tr_type": "1", "content-type": "utf-8"},
+                "body": {"input": {"tr_id": TR_ID_REAL, "tr_key": tr_key}}
             }
-            
             ws.send(json.dumps(req_body))
-            time.sleep(0.05) # 요청 간격 조절
-            
-        print(f"[Watcher] Monitoring started for {len(self.target_list)} stocks.")
+            time.sleep(0.05)
 
-    def start(self):
-        # 1. 웹소켓 키 발급 (kis_auth V14.0 사용)
+    def start_loop(self):
         self.ws_key = kis_auth.get_websocket_key()
         if not self.ws_key:
-            print("[Watcher] Approval Key Missing. Aborting.")
+            print("[Watcher] Key Error.")
             return
 
-        # 2. 연결 시작
         self.ws = websocket.WebSocketApp(
             f"{self.base_url}/tryitout/{TR_ID_REAL}",
-            on_open=self.on_open,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close
+            on_open=self.on_open, on_message=self.on_message,
+            on_error=self.on_error, on_close=self.on_close
         )
-        
         self.ws.run_forever()
 
-# 외부 호출용 함수
-def run_monitoring(target_list):
+    def stop(self):
+        if self.ws:
+            self.ws.close()
+        self.is_running = False
+
+# [외부 제어 함수]
+def start_background_monitoring(target_list):
+    global _active_watcher
+    
+    # 이미 실행 중이면 중단 후 재시작
+    if _active_watcher and _active_watcher.is_running:
+        stop_monitoring()
+        time.sleep(1)
+
     if not target_list:
-        print("[Watcher] Target list is empty.")
+        print(" [Watcher] 타겟 리스트가 비어있습니다.")
         return
 
-    watcher = MervisWatcher(target_list)
-    try:
-        watcher.start()
-    except KeyboardInterrupt:
-        print("[Watcher] Stopped by user.")
+    _active_watcher = MervisWatcher(target_list)
+    
+    # 스레드로 실행 (Non-blocking)
+    t = threading.Thread(target=_active_watcher.start_loop)
+    t.daemon = True # 메인 프로그램 종료 시 같이 종료
+    t.start()
+
+def stop_monitoring():
+    global _active_watcher
+    if _active_watcher:
+        _active_watcher.stop()
+        _active_watcher = None
+        print(" [Watcher] 감시 종료.")
+
+def is_active():
+    global _active_watcher
+    return _active_watcher is not None and _active_watcher.is_running

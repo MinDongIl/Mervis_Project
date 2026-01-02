@@ -2,7 +2,7 @@ from google import genai
 import secret
 import mervis_profile 
 import mervis_bigquery 
-import mervis_brain # [NEW] 대화 중 분석을 위해 두뇌 모듈 연결
+import mervis_brain
 import json
 
 client = genai.Client(api_key=secret.GEMINI_API_KEY)

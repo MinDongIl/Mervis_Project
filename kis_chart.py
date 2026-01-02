@@ -4,7 +4,7 @@ import kis_auth
 import mervis_state
 import time 
 
-# [V12.0] 기준일자(BYMD) 파라미터 대응을 위한 공통 함수 수정
+# 기준일자(BYMD) 파라미터 대응을 위한 공통 함수 수정
 def _fetch_chart(ticker, gubn, bymd=""):
     # API 호출 전 잠시 대기 (모의투자 서버 부하 방지)
     time.sleep(0.2)
@@ -43,7 +43,7 @@ def _fetch_chart(ticker, gubn, bymd=""):
             "EXCD": exc, 
             "SYMB": ticker,
             "GUBN": gubn,
-            "BYMD": bymd, # [V12.0] 특정 날짜 이후 데이터 조회를 위해 사용
+            "BYMD": bymd, # 특정 날짜 이후 데이터 조회를 위해 사용
             "MODP": "1", 
             "KEYB": ""
         }

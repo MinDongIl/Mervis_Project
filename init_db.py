@@ -17,46 +17,96 @@ def get_client():
     credentials = service_account.Credentials.from_service_account_file(KEY_PATH)
     return bigquery.Client(credentials=credentials, project=credentials.project_id)
 
+def generate_search_keywords(sector, name):
+    """
+    [Smart Tagging] 섹터와 종목명을 분석하여 검색용 키워드(Tag) 자동 생성
+    """
+    keywords = []
+    # 데이터가 없을 경우 방어 코드
+    sec_str = str(sector).upper() if sector else ""
+    name_str = str(name).upper() if name else ""
+
+    # 1. 섹터 기반 매핑
+    if "TECHNOLOGY" in sec_str or "IT " in sec_str or "SOFTWARE" in sec_str:
+        keywords.extend(["TECH", "IT"])
+    if "FINANCIAL" in sec_str or "BANK" in sec_str or "CAPITAL" in sec_str:
+        keywords.extend(["FIN", "BANK"])
+    if "HEALTH" in sec_str or "BIO" in sec_str or "PHARMA" in sec_str:
+        keywords.extend(["BIO", "HEALTH", "MED"])
+    if "CONSUMER" in sec_str or "RETAIL" in sec_str:
+        keywords.extend(["CONSUMER", "RETAIL"])
+    if "ENERGY" in sec_str or "OIL" in sec_str or "GAS" in sec_str:
+        keywords.extend(["ENERGY", "OIL"])
+    if "COMMUNICATION" in sec_str or "MEDIA" in sec_str:
+        keywords.extend(["COM", "MEDIA"])
+    if "SEMICONDUCTOR" in sec_str:
+        keywords.extend(["SEMI", "CHIP", "TECH"])
+    if "ETF" in sec_str:
+        keywords.extend(["ETF"])
+
+    # 2. 이름 기반 정밀 매핑
+    if "SEMICONDUCTOR" in name_str or "DEVICES" in name_str:
+        keywords.extend(["SEMI", "CHIP"])
+    if "AIRLINES" in name_str or "AIR" in name_str:
+        keywords.extend(["AIR", "TRAVEL"])
+    if "MOTOR" in name_str or "AUTO" in name_str or "VEHICLE" in name_str:
+        keywords.extend(["CAR", "EV", "AUTO"])
+    if "COIN" in name_str or "BLOCKCHAIN" in name_str or "CRYPTO" in name_str:
+        keywords.extend(["COIN", "CRYPTO"])
+    if "AI " in name_str or "ROBOT" in name_str:
+        keywords.extend(["AI", "ROBOT"])
+
+    # 중복 제거 후 문자열 반환
+    return ", ".join(list(set(keywords)))
+
 def get_massive_tickers():
     print("[System] 미국 3대 거래소(NASDAQ, NYSE, AMEX) 전 종목 수집 중...")
     
     # 1. 거래소별 전체 리스트 확보
-    df_nasdaq = fdr.StockListing('NASDAQ')
-    df_nyse = fdr.StockListing('NYSE')
-    df_amex = fdr.StockListing('AMEX')
+    try:
+        df_nasdaq = fdr.StockListing('NASDAQ')
+        df_nyse = fdr.StockListing('NYSE')
+        df_amex = fdr.StockListing('AMEX')
+    except Exception as e:
+        print(f"[Critical Error] 데이터 수집 실패: {e}")
+        return []
     
     print(f" - NASDAQ: {len(df_nasdaq)}개")
     print(f" - NYSE: {len(df_nyse)}개")
     print(f" - AMEX: {len(df_amex)}개")
     
     # 2. 통합 및 데이터 정제
-    # 필요한 컬럼만 추출: Symbol(티커), Name(이름), Industry(산업/섹터)
     df_all = pd.concat([df_nasdaq, df_nyse, df_amex])
     
     # 중복 제거 (티커 기준)
     df_all = df_all.drop_duplicates(subset=['Symbol'])
     
-    # 3. 1차 필터링 (쓰레기 데이터 제거)
-    # - 티커에 숫자나 특수문자가 너무 많은 것 제외 (워런트, 우선주 등)
-    # - 섹터 정보가 없는 것 제외
     filtered_list = []
     
+    print("[System] 데이터 정제 및 스마트 태그 생성 중...")
+
     for _, row in df_all.iterrows():
         ticker = str(row['Symbol'])
         name = str(row['Name'])
+        # FinanceDataReader에서는 보통 'Industry'나 'Sector' 컬럼 사용
         sector = str(row.get('Industry', row.get('Sector', 'Unknown')))
         
-        # [필터] 티커가 5글자 이상이면 보통 워런트/우선주/스팩일 확률 높음 (일반 주식은 1~4글자)
-        # 단, GOOGL 같은 5글자 우량주도 있으니 너무 엄격하게는 말고, 특수문자 포함 여부로 판단
+        # [필터] 잡주 제거 (특수문자 포함, 5글자 초과 워런트 등)
         if len(ticker) > 5: continue 
-        if "^" in ticker or "." in ticker: continue # BRK.B 같은건 BRK-B로 변환 필요하지만 일단 제외
+        if "^" in ticker or "." in ticker: continue
+        
+        # [NEW] 키워드 생성
+        keywords = generate_search_keywords(sector, name)
         
         filtered_list.append({
             "ticker": ticker,
             "name": name,
             "sector": sector,
-            "status": "ACTIVE",  # [핵심] 기본 상태 '활성'
-            "fail_count": 0      # [핵심] 실패 횟수 0
+            "keywords": keywords, # [NEW]
+            "status": "BAD",      # 초기 상태는 '분석 전(BAD)'로 설정 -> 이후 update_volume_tier가 등급 매김
+            "fail_count": 0,
+            "change_rate": 0.0,
+            "last_volume": 0
         })
         
     print(f"[System] 정제 후 최종 유니버스: {len(filtered_list)}개 종목 준비 완료.")
@@ -68,59 +118,46 @@ def seed_db():
 
     # 1. 데이터 가져오기
     tickers = get_massive_tickers()
+    if not tickers: return
     
-    # 2. 테이블 스키마 정의 (진화형 DB 구조)
+    # 2. BigQuery 업로드 (Write Truncate 방식)
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_TICKERS}"
-    schema = [
-        bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
-        bigquery.SchemaField("name", "STRING", mode="NULLABLE"),
-        bigquery.SchemaField("sector", "STRING", mode="NULLABLE"),
-        bigquery.SchemaField("status", "STRING", mode="NULLABLE"),     # ACTIVE, INACTIVE, BAD
-        bigquery.SchemaField("fail_count", "INTEGER", mode="NULLABLE"), # API 실패 횟수
-        bigquery.SchemaField("updated_at", "TIMESTAMP", mode="NULLABLE"),
-    ]
     
-    # 테이블 생성
-    try:
-        client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
-    except: pass
-
-    # 3. 기존 리스트 초기화 (주의: trade_history는 건드리지 않음!)
-    try:
-        query = f"DELETE FROM `{table_ref}` WHERE true"
-        client.query(query).result()
-        print("[BQ] 기존 종목 리스트 초기화 완료 (분석 기록은 유지됨).")
-    except: pass
-
-    # 4. 데이터 삽입 (배치 처리)
+    # 스키마 정의 (keywords, change_rate, last_volume 포함)
+    job_config = bigquery.LoadJobConfig(
+        write_disposition="WRITE_TRUNCATE", # 기존 데이터 밀고 덮어쓰기
+        schema=[
+            bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("name", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("sector", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("keywords", "STRING", mode="NULLABLE"), # [NEW]
+            bigquery.SchemaField("status", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("change_rate", "FLOAT", mode="NULLABLE"),
+            bigquery.SchemaField("last_volume", "INTEGER", mode="NULLABLE"),
+            bigquery.SchemaField("fail_count", "INTEGER", mode="NULLABLE"),
+            bigquery.SchemaField("updated_at", "STRING", mode="NULLABLE"), # 호환성 위해 STRING
+        ]
+    )
+    
+    # 데이터 포맷팅 (Timestamp -> String)
     rows_to_insert = []
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     for item in tickers:
-        rows_to_insert.append({
-            "ticker": item['ticker'],
-            "name": item['name'],
-            "sector": item['sector'],
-            "status": "ACTIVE",
-            "fail_count": 0,
-            "updated_at": timestamp
-        })
-    
-    # 1000개씩 끊어서 삽입
-    batch_size = 1000
-    total_inserted = 0
-    print(f"[BQ] 데이터 업로드 시작 (총 {len(rows_to_insert)}개)...")
-    
-    for i in range(0, len(rows_to_insert), batch_size):
-        batch = rows_to_insert[i:i+batch_size]
-        errors = client.insert_rows_json(table_ref, batch)
-        if not errors:
-            total_inserted += len(batch)
-            print(f" - {total_inserted}개 저장 완료...")
-        else:
-            print(f" [Error] 배치 저장 실패: {errors}")
+        item['updated_at'] = timestamp
+        rows_to_insert.append(item)
 
-    print("\n[Complete] 3,000+ 종목 DB 구축 완료. 머비스의 시야가 확장되었습니다.")
+    print(f"[BQ] BigQuery 전체 덮어쓰기 시작 (총 {len(rows_to_insert)}개)...")
+
+    try:
+        job = client.load_table_from_json(rows_to_insert, table_ref, job_config=job_config)
+        job.result() # 완료 대기
+        
+        print("\n[Complete] 6,000+ 종목 DB 구축 및 키워드 생성 완료.")
+        print(" -> 이제 'update_volume_tier.py'를 실행하여 거래량 분석을 수행하세요.")
+        
+    except Exception as e:
+        print(f"[Error] DB 업로드 실패: {e}")
 
 if __name__ == "__main__":
     seed_db()

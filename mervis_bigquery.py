@@ -3,6 +3,7 @@ from google.oauth2 import service_account
 import os
 import json
 from datetime import datetime
+from deep_translator import GoogleTranslator
 import mervis_state
 
 # 설정
@@ -11,6 +12,7 @@ DATASET_ID = "mervis_db"
 TABLE_HISTORY = "trade_history"
 TABLE_USER = "user_info"
 TABLE_TICKERS = "ticker_universe"
+TABLE_BALANCE = "daily_balance"
 
 def get_client():
     if not os.path.exists(KEY_PATH):
@@ -19,167 +21,106 @@ def get_client():
     credentials = service_account.Credentials.from_service_account_file(KEY_PATH)
     return bigquery.Client(credentials=credentials, project=credentials.project_id)
 
-# --- [NEW] 종목 DB(Ticker Universe) 관련 기능 ---
-
-# 0. DB 최신화 상태 점검 (Smart Auto-Run 용)
 def check_db_freshness():
-    """
-    DB가 오늘 날짜로 업데이트되어 있는지 확인
-    Return: True(최신임), False(구식임/업데이트 필요)
-    """
     client = get_client()
     if not client: return False
-    
-    # 아무 종목이나 하나 찍어서 업데이트 날짜 확인
-    query = f"""
-        SELECT updated_at FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
-        LIMIT 1
-    """
+    query = f"SELECT updated_at FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}` LIMIT 1"
     try:
         results = list(client.query(query).result())
-        if not results: return False # 데이터 없으면 업데이트 필요
-        
-        # 저장된 날짜 (Timestamp를 문자열로 변환하여 YYYY-MM-DD 비교)
+        if not results: return False
         last_update = str(results[0].updated_at)[:10] 
         today = datetime.now().strftime("%Y-%m-%d")
-        
         return last_update == today
-    except:
-        return False
+    except: return False
 
-# 1. DB에서 조건에 맞는 종목 추출 (Core & Satellite 전략 적용)
 def get_tickers_from_db(limit=40, tags=[]):
     """
-    1차: 태그 검색 시도
-    2차: 실패 시 Core(우량주 30) + Satellite(급등주 10) 혼합 전략 사용
+    [Auto-Translation Search]
+    사용자가 입력한 태그(영어)를 번역기로 한국어로 변환하여,
+    DB 내의 영문/한글 키워드를 모두 검색합니다.
     """
     client = get_client()
     if not client: return []
     
     results = []
     
-    # [1차 시도] 태그(User Preference) 기반 검색
+    # [1차 시도] 번역기 기반 확장 검색
     if tags:
-        tag_str = ", ".join([f"'{t}'" for t in tags])
-        query = f"""
-            SELECT ticker, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
-            WHERE sector IN ({tag_str}) AND status IN ('ACTIVE_HIGH', 'ACTIVE_MID')
-            ORDER BY RAND() LIMIT {limit}
-        """
-        try:
-            results = list(client.query(query).result())
-        except Exception as e:
-            print(f" [DB Warning] 태그 검색 에러: {e}")
-            
-    # [2차 시도] 태그 검색 결과가 없거나 태그 미지정 시 -> Core & Satellite 전략
-    if not results:
-        if tags: 
-            print(" [DB] 태그 매칭 종목 없음. 'Core(30) + Satellite(10)' 전략으로 선별합니다.")
-            
-        final_mix = []
+        like_conditions = []
+        translator = GoogleTranslator(source='auto', target='ko')
         
-        # 1. Core (30개): 거래량 터진 우량주 (ACTIVE_HIGH) 중 랜덤
+        for t in tags:
+            origin_tag = t.strip()
+            if not origin_tag: continue
+            
+            search_words = [origin_tag.upper()]
+            
+            # 번역 시도
+            try:
+                translated = translator.translate(origin_tag)
+                if translated and translated.upper() != origin_tag.upper():
+                    search_words.append(translated)
+            except Exception as e:
+                pass
+            
+            # OR 조건 생성
+            sub_conds = [f"keywords LIKE '%{w}%'" for w in search_words]
+            like_conditions.append(f"({' OR '.join(sub_conds)})")
+        
+        if like_conditions:
+            final_where = " OR ".join(like_conditions)
+            query = f"""
+                SELECT ticker, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
+                WHERE ({final_where}) 
+                AND status IN ('ACTIVE_HIGH', 'ACTIVE_MID')
+                ORDER BY RAND() LIMIT {limit}
+            """
+            try:
+                results = list(client.query(query).result())
+            except Exception as e:
+                print(f" [DB Warning] 검색 에러: {e}")
+            
+    # [2차 시도] Fallback
+    if not results:
+        if tags: print(" [DB] 검색 결과 없음. Core(30)+Satellite(10) 전략으로 대체.")
+        final_mix = []
         try:
             query_core = f"""
                 SELECT ticker, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
-                WHERE status = 'ACTIVE_HIGH'
-                ORDER BY RAND() LIMIT 30
+                WHERE status = 'ACTIVE_HIGH' ORDER BY RAND() LIMIT 30
             """
-            core_results = list(client.query(query_core).result())
-            final_mix.extend(core_results)
+            final_mix.extend(list(client.query(query_core).result()))
         except: pass
-        
-        # 2. Satellite (10개): 전일 등락률(change_rate) 상위 Top 10 (급등주)
-        # ACTIVE_MID 이상인 종목 중에서 선정하여 잡주 제외
         try:
             query_sat = f"""
                 SELECT ticker, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`
-                WHERE status IN ('ACTIVE_HIGH', 'ACTIVE_MID')
-                ORDER BY change_rate DESC LIMIT 10
+                WHERE status IN ('ACTIVE_HIGH', 'ACTIVE_MID') ORDER BY change_rate DESC LIMIT 10
             """
-            sat_results = list(client.query(query_sat).result())
-            final_mix.extend(sat_results)
+            final_mix.extend(list(client.query(query_sat).result()))
         except: pass
-        
         results = final_mix
-        
-    # 결과 변환
-    if not results:
-        return []
 
+    if not results: return []
     return [{"code": row.ticker, "tag": row.sector} for row in results]
 
-# 2. 종목 리스트 DB에 저장 (초기화 및 업데이트용)
-def seed_ticker_db(ticker_list):
-    client = get_client()
-    if not client: return
-    
-    table_ref = f"{client.project}.{DATASET_ID}.{TABLE_TICKERS}"
-    
-    # 스키마 정의 (status, fail_count, change_rate, last_volume 포함)
-    schema = [
-        bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
-        bigquery.SchemaField("name", "STRING", mode="NULLABLE"),
-        bigquery.SchemaField("sector", "STRING", mode="NULLABLE"),
-        bigquery.SchemaField("status", "STRING", mode="NULLABLE"), # ACTIVE_HIGH, MID, BAD
-        bigquery.SchemaField("change_rate", "FLOAT", mode="NULLABLE"), # [NEW] 등락률
-        bigquery.SchemaField("last_volume", "INTEGER", mode="NULLABLE"), # [NEW] 최근 거래량
-        bigquery.SchemaField("fail_count", "INTEGER", mode="NULLABLE"),
-        bigquery.SchemaField("updated_at", "STRING", mode="NULLABLE"), # TIMESTAMP -> STRING (호환성)
-    ]
-    
-    # 테이블 생성 (없으면 생성)
-    try:
-        client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
-    except: pass
-    
-    rows = []
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for item in ticker_list:
-        rows.append({
-            "ticker": item['code'],
-            "name": item.get('name', ''),
-            "sector": item.get('tag', 'Unknown'),
-            "status": "ACTIVE", # 초기 상태
-            "change_rate": 0.0,
-            "last_volume": 0,
-            "fail_count": 0,
-            "updated_at": timestamp
-        })
-        
-    if rows:
-        errors = client.insert_rows_json(table_ref, rows)
-        if not errors:
-            print(f"[System] {len(rows)} tickers saved to BigQuery.")
-        else:
-            print(f"[Error] Failed to save tickers: {errors}")
-
-# --- [기존 기능 유지] 매매 기록 및 프로필 ---
+# --- 매매 기록 및 프로필 (INSERT ONLY) ---
 
 def save_log(ticker, mode, price, report, news_summary=""):
     client = get_client()
     if not client: return
-    
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_HISTORY}"
     rows = [{
         "log_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ticker": ticker, 
-        "mode": mode,
-        "price": price,
-        "report": report, 
-        "news_summary": news_summary,
-        "strategy_result": "WAITING"
+        "ticker": ticker, "mode": mode, "price": price,
+        "report": report, "news_summary": news_summary, "strategy_result": "WAITING"
     }]
-    try:
-        client.insert_rows_json(table_ref, rows)
+    try: client.insert_rows_json(table_ref, rows)
     except: pass
 
 def get_recent_memory(ticker):
     client = get_client()
     if not client: return None
-    
     current_mode = mervis_state.get_mode()
-    
     query = f"""
         SELECT report, log_date FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
         WHERE ticker = '{ticker}' AND mode = '{current_mode}' 
@@ -187,20 +128,14 @@ def get_recent_memory(ticker):
     """
     try:
         results = list(client.query(query).result())
-        if results: 
-            date_str = str(results[0].log_date)
-            return {"date": date_str, "report": results[0].report}
-    except Exception as e:
-        print(f" [BQ Error] 기억 조회 실패 ({ticker}/{current_mode}): {e}")
-        return None
+        if results: return {"date": str(results[0].log_date), "report": results[0].report}
+    except: return None
     return None
 
 def get_multi_memories(ticker, limit=3):
     client = get_client()
     if not client: return []
-    
     current_mode = mervis_state.get_mode()
-    
     query = f"""
         SELECT report, log_date, price FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
         WHERE ticker = '{ticker}' AND mode = '{current_mode}' 
@@ -209,53 +144,98 @@ def get_multi_memories(ticker, limit=3):
     try:
         results = list(client.query(query).result())
         return [{"date": str(row.log_date), "report": row.report, "price": row.price} for row in results]
-    except Exception as e:
-        print(f" [BQ Error] 다중 기억 조회 실패 ({ticker}/{current_mode}): {e}")
-        return []
+    except: return []
 
 def get_analyzed_ticker_list():
     client = get_client()
     if not client: return []
-    
     current_mode = mervis_state.get_mode()
-    
     query = f"""
-        SELECT ticker
-        FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
+        SELECT ticker FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
         WHERE mode = '{current_mode}'
-        GROUP BY ticker
-        ORDER BY MAX(log_date) DESC
+        GROUP BY ticker ORDER BY MAX(log_date) DESC
     """
     try:
         results = list(client.query(query).result())
         return [row.ticker for row in results]
-    except Exception as e:
-        print(f" [BQ Error] 종목 리스트 조회 실패: {e}")
-        return []
+    except: return []
 
 def save_profile(profile_data):
     client = get_client()
     if not client: return
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_USER}"
-    profile_str = json.dumps(profile_data, ensure_ascii=False)
-    updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    rows = [{"updated_at": updated_at, "profile_json": profile_str}]
-    try:
-        client.insert_rows_json(table_ref, rows)
+    rows = [{"updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "profile_json": json.dumps(profile_data, ensure_ascii=False)}]
+    try: client.insert_rows_json(table_ref, rows)
     except: pass
 
 def get_profile():
     client = get_client()
     if not client: return None
+    query = f"SELECT profile_json FROM `{client.project}.{DATASET_ID}.{TABLE_USER}` ORDER BY updated_at DESC LIMIT 1"
+    try:
+        results = list(client.query(query).result())
+        if results: return json.loads(results[0].profile_json)
+    except: return None
+    return None
+
+# --- 자산 관리 (Daily Balance) ---
+
+def save_daily_balance(total_asset, cash, stock_val, pnl_daily):
+    """
+    매일의 자산 상태를 기록 (자동으로 테이블 생성)
+    """
+    client = get_client()
+    if not client: return
+
+    table_ref = f"{client.project}.{DATASET_ID}.{TABLE_BALANCE}"
+    
+    # 스키마 정의 (Date, Total, Cash, Stock, PnL)
+    schema = [
+        bigquery.SchemaField("date", "DATE", mode="REQUIRED"),
+        bigquery.SchemaField("total_asset", "FLOAT", mode="NULLABLE"),
+        bigquery.SchemaField("cash", "FLOAT", mode="NULLABLE"),
+        bigquery.SchemaField("stock_val", "FLOAT", mode="NULLABLE"),
+        bigquery.SchemaField("pnl_daily", "FLOAT", mode="NULLABLE"),
+    ]
+    
+    # 테이블이 없으면 생성
+    try:
+        client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
+    except: pass
+
+    # 오늘 날짜
+    today = datetime.now().strftime("%Y-%m-%d")
+    
+    rows = [{
+        "date": today,
+        "total_asset": float(total_asset),
+        "cash": float(cash),
+        "stock_val": float(stock_val),
+        "pnl_daily": float(pnl_daily)
+    }]
+    
+    try:
+        errors = client.insert_rows_json(table_ref, rows)
+        if not errors:
+            print(f" [BQ] 자산 기록 완료: Total ${total_asset} (PnL: {pnl_daily}%)")
+        else:
+            print(f" [BQ Error] 자산 기록 실패: {errors}")
+    except Exception as e:
+        print(f" [BQ Error] {e}")
+
+def get_asset_trend(limit=30):
+    """
+    최근 자산 변동 추이를 가져옴 (차트 그리기용)
+    """
+    client = get_client()
+    if not client: return []
+    
     query = f"""
-        SELECT profile_json FROM `{client.project}.{DATASET_ID}.{TABLE_USER}`
-        ORDER BY updated_at DESC LIMIT 1
+        SELECT date, total_asset, pnl_daily 
+        FROM `{client.project}.{DATASET_ID}.{TABLE_BALANCE}`
+        ORDER BY date ASC LIMIT {limit}
     """
     try:
         results = list(client.query(query).result())
-        if results:
-            return json.loads(results[0].profile_json)
-    except Exception as e:
-        print(f" [BQ Error] 프로필 로드 실패: {e}")
-        return None
-    return None
+        return [{"date": str(row.date), "total": row.total_asset, "pnl": row.pnl_daily} for row in results]
+    except: return []

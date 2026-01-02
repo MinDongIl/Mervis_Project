@@ -5,6 +5,7 @@ import os
 import pandas as pd
 from datetime import datetime
 import time
+import re # 정규표현식 사용 (특수문자 제거용)
 
 # 설정
 KEY_PATH = "service_account.json"
@@ -16,20 +17,76 @@ def get_client():
     credentials = service_account.Credentials.from_service_account_file(KEY_PATH)
     return bigquery.Client(credentials=credentials, project=credentials.project_id)
 
+def generate_search_keywords(sector, name):
+    """
+    [Smart Tagging V2] 
+    1. 하드코딩된 약어 매핑 (Smart)
+    2. 섹터명을 단어 단위로 쪼개서 자동 등록 (Fallback) -> 빈칸 방지
+    """
+    keywords = set() # 중복 방지를 위해 set 사용
+    
+    sec_str = str(sector).upper() if sector else ""
+    name_str = str(name).upper() if name else ""
+
+    # --- 1. 스마트 약어 매핑 (우리가 아는 것들) ---
+    if "TECHNOLOGY" in sec_str or "IT " in sec_str or "SOFTWARE" in sec_str:
+        keywords.update(["TECH", "IT"])
+    if "SEMICONDUCTOR" in sec_str or "반도체" in sec_str:
+        keywords.update(["SEMI", "CHIP", "TECH"])
+    if "FINANCIAL" in sec_str or "BANK" in sec_str or "금융" in sec_str:
+        keywords.update(["FIN", "BANK"])
+    if "HEALTH" in sec_str or "BIO" in sec_str or "PHARMA" in sec_str:
+        keywords.update(["BIO", "HEALTH", "MED"])
+    if "ENERGY" in sec_str or "OIL" in sec_str or "GAS" in sec_str:
+        keywords.update(["ENERGY", "OIL"])
+    if "CONSUMER" in sec_str or "RETAIL" in sec_str or "소비" in sec_str:
+        keywords.update(["CONSUMER", "RETAIL"])
+    if "COMMUNICATION" in sec_str or "MEDIA" in sec_str:
+        keywords.update(["COM", "MEDIA"])
+    if "AUTO" in sec_str or "VEHICLE" in sec_str or "자동차" in sec_str:
+        keywords.update(["CAR", "EV", "AUTO"])
+    if "CONSTRUCTION" in sec_str or "건설" in sec_str:
+        keywords.update(["CONSTRUCT", "INFRA"])
+    if "ETF" in sec_str:
+        keywords.add("ETF")
+
+    # --- 2. 이름 기반 보조 매핑 ---
+    if "AIRLINES" in name_str or "AIR" in name_str:
+        keywords.update(["AIR", "TRAVEL"])
+    if "COIN" in name_str or "BLOCKCHAIN" in name_str or "CRYPTO" in name_str:
+        keywords.update(["COIN", "CRYPTO"])
+    if "AI " in name_str or "ROBOT" in name_str:
+        keywords.update(["AI", "ROBOT"])
+
+    # --- 3. [핵심] 자동 추출 (빈칸 방지 안전장치) ---
+    # 섹터명에서 특수문자(&, -, /)를 공백으로 치환하고 단어로 쪼갬
+    # 예: "Household & Personal Products" -> ["HOUSEHOLD", "PERSONAL", "PRODUCTS"]
+    
+    # 3-1. 불용어(Stopwords) 제거: 검색에 의미 없는 단어들
+    stopwords = ["AND", "&", "OR", "OF", "THE", "SERVICES", "PRODUCTS", "INC", "LTD", "CORP", "HOLDINGS", "GROUP", "SOLUTIONS", "SYSTEMS"]
+    
+    # 정규식으로 한글/영문/숫자만 남기고 나머지는 공백 처리
+    clean_sec = re.sub(r'[^0-9a-zA-Z가-힣]', ' ', sec_str)
+    
+    for word in clean_sec.split():
+        if len(word) >= 2 and word not in stopwords:
+            keywords.add(word) # 섹터에 있는 단어 자체를 키워드로 등록
+
+    return ", ".join(list(keywords))
+
 def update_volume_tier():
     client = get_client()
     if not client: return
 
-    # [Step 1] 기존 데이터(이름, 섹터 포함) 백업 로딩
+    # [Step 1] 기존 데이터 로딩
     print("[Step 1] BigQuery에서 기존 종목 정보 로딩 중...")
     query = f"SELECT ticker, name, sector FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}`"
     results = list(client.query(query).result())
     
-    # 딕셔너리로 변환
     ticker_info_map = {row.ticker: {'name': row.name, 'sector': row.sector} for row in results}
     all_tickers = list(ticker_info_map.keys())
     
-    print(f"[Step 2] 총 {len(all_tickers)}개 종목 정밀 분석 (거래량/등락률) 시작...")
+    print(f"[Step 2] 총 {len(all_tickers)}개 종목 분석 시작...")
 
     batch_size = 1000
     updates = {} 
@@ -40,19 +97,16 @@ def update_volume_tier():
         
         try:
             print(f" -> 배치 다운로드 중 ({i+1}~{min(i+batch_size, len(all_tickers))})...")
-            time.sleep(2) # Rate Limit 방지
+            time.sleep(2) 
             
-            # 5일치 데이터 다운로드
             df = yf.download(batch_str, period="5d", progress=False, threads=True)
             
-            # 데이터 분리 (Volume, Close)
             try:
                 vol_df = df['Volume']
                 close_df = df['Close']
             except KeyError:
                 continue
 
-            # 평균 거래량 계산 (등급 산정용)
             if isinstance(vol_df, pd.Series):
                  mean_vols = pd.DataFrame(vol_df).mean()
                  vol_data_raw = pd.DataFrame(vol_df)
@@ -63,47 +117,37 @@ def update_volume_tier():
                  close_data = close_df
             
             for ticker in batch:
-                # 1. 거래량 분석 (등급 산정)
                 avg_vol = 0
                 if ticker in mean_vols and not pd.isna(mean_vols[ticker]):
                     avg_vol = int(mean_vols[ticker])
 
-                # 등급 산정
                 status = "BAD"
                 if avg_vol >= 1000000: status = "ACTIVE_HIGH"
                 elif avg_vol >= 200000: status = "ACTIVE_MID"
                 
-                # 2. 직전 장 거래량 추출 (Last Volume)
                 last_vol = 0
                 try:
                     if ticker in vol_data_raw:
                         vols = vol_data_raw[ticker].dropna()
-                        if not vols.empty:
-                            last_vol = int(vols.iloc[-1])
+                        if not vols.empty: last_vol = int(vols.iloc[-1])
                 except: pass
 
-                # 3. 등락률 계산 (Change Rate)
                 rate = 0.0
                 try:
                     if ticker in close_data:
                         prices = close_data[ticker].dropna()
                         if len(prices) >= 2:
-                            prev_close = prices.iloc[-2]
-                            curr_close = prices.iloc[-1]
-                            if prev_close > 0:
-                                rate = ((curr_close - prev_close) / prev_close) * 100
+                            prev = prices.iloc[-2]
+                            curr = prices.iloc[-1]
+                            if prev > 0: rate = ((curr - prev) / prev) * 100
                 except: pass
 
-                updates[ticker] = {
-                    'status': status, 
-                    'rate': round(rate, 2),
-                    'last_vol': last_vol
-                }
+                updates[ticker] = {'status': status, 'rate': round(rate, 2), 'last_vol': last_vol}
                 
         except Exception as e:
             print(f" [Skip] 배치 에러: {e}")
 
-    print("[Step 3] 최종 데이터 병합 및 DB 덮어쓰기 (Schema Update)...")
+    print("[Step 3] 최종 데이터 병합 및 DB 덮어쓰기...")
     
     rows_to_insert = []
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -114,23 +158,25 @@ def update_volume_tier():
         data = updates.get(ticker, {'status': 'BAD', 'rate': 0.0, 'last_vol': 0})
         
         status = data['status']
-        rate = data['rate']
-        last_vol = data['last_vol']
-        
         if status in count_summary: count_summary[status] += 1
+        
+        # [NEW] 개선된 키워드 생성 로직 적용
+        sector = info.get('sector', '')
+        name = info.get('name', '')
+        keywords = generate_search_keywords(sector, name)
         
         rows_to_insert.append({
             "ticker": ticker,
-            "name": info.get('name', ''),
-            "sector": info.get('sector', ''),
+            "name": name,
+            "sector": sector,
+            "keywords": keywords, 
             "status": status,
-            "change_rate": rate,      # [NEW] 등락률
-            "last_volume": last_vol,  # [NEW] 직전 장 거래량
+            "change_rate": data['rate'],
+            "last_volume": data['last_vol'],
             "fail_count": 0,
             "updated_at": timestamp
         })
 
-    # BigQuery 테이블 덮어쓰기
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_TICKERS}"
     
     job_config = bigquery.LoadJobConfig(
@@ -139,9 +185,10 @@ def update_volume_tier():
             bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
             bigquery.SchemaField("name", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("sector", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("keywords", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("status", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("change_rate", "FLOAT", mode="NULLABLE"), 
-            bigquery.SchemaField("last_volume", "INTEGER", mode="NULLABLE"), # [NEW] 스키마 추가
+            bigquery.SchemaField("last_volume", "INTEGER", mode="NULLABLE"),
             bigquery.SchemaField("fail_count", "INTEGER", mode="NULLABLE"),
             bigquery.SchemaField("updated_at", "STRING", mode="NULLABLE"),
         ]
@@ -150,12 +197,8 @@ def update_volume_tier():
     try:
         job = client.load_table_from_json(rows_to_insert, table_ref, job_config=job_config)
         job.result()
-        
-        print(f"\n[Complete] DB 업데이트 완료 (등락률 + 최근 거래량).")
-        print(f" - HIGH (주도주): {count_summary['ACTIVE_HIGH']}개")
-        print(f" - MID (일반): {count_summary['ACTIVE_MID']}개")
-        print(f" - BAD (소외주): {count_summary['BAD']}개")
-        
+        print(f"\n[Complete] DB 업데이트 완료.")
+        print(f" - HIGH: {count_summary['ACTIVE_HIGH']} / MID: {count_summary['ACTIVE_MID']} / BAD: {count_summary['BAD']}")
     except Exception as e:
         print(f"[Critical Error] DB 저장 실패: {e}")
 
