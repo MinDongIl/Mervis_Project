@@ -9,13 +9,14 @@ import mervis_profile
 import mervis_bigquery
 import update_volume_tier
 import kis_websocket
+import kis_account
 
 def system_init():
     print("==================================================")
     print(" [MERVIS] System Initialization Check")
     print("==================================================")
     
-    # DB 최신화 상태 점검 (Smart Auto-Run)
+    # DB 최신화 상태 점검
     print(" [Check] Checking DB Freshness...", end=" ")
     is_fresh = mervis_bigquery.check_db_freshness()
     
@@ -24,14 +25,11 @@ def system_init():
     else:
         print("[UPDATE REQUIRED]")
         print("\n [Notice] DB outdated. Running Daily Volume Analysis...")
-        print("          (This may take 1-2 minutes. Please wait...)\n")
-        
         try:
             update_volume_tier.update_volume_data()
             print("\n [System] DB Update Complete. Starting Main System.")
         except Exception as e:
-            print(f"\n [Warning] Update failed ({e}). Proceeding with existing data.")
-            
+            print(f"\n [Warning] Update failed ({e}). Proceeding...")
     print("==================================================\n")
 
 def run_system():
@@ -46,10 +44,8 @@ def run_system():
     try:
         profile = mervis_profile.get_user_profile()
         style = profile.get('investment_style', 'Unknown')
-        updated = profile.get('last_updated', 'N/A')
-        print(f" [User Profile] Style: '{style}' | Updated: {updated}")
-    except Exception as e:
-        print(f" [Warning] Profile load failed: {e}")
+        print(f" [User Profile] Style: '{style}'")
+    except: pass
 
     print("==================================================")
     print(" [1] 실전 모드 (Real)")
@@ -60,28 +56,49 @@ def run_system():
     
     mode_name = "실전(REAL)" if mervis_state.is_real() else "모의(MOCK)"
     print(f"\n[시스템] '{mode_name}' 모드로 시작합니다.")
+
+    # 자산 현황 체크 및 DB 저장
+    print(f"\n[System] '{mode_name}' 자산 현황 동기화 중...")
+    try:
+        my_asset = kis_account.get_my_total_assets()
+        if my_asset:
+            print(f" -> 총 자산: ${my_asset['total']} | 수익률: {my_asset['pnl']}%")
+            
+            mervis_bigquery.save_daily_balance(
+                total_asset=my_asset['total'],
+                cash=my_asset['cash'],
+                stock_val=my_asset['stock'],
+                pnl_daily=my_asset['pnl']
+            )
+        else:
+            print(" -> [Warning] 자산 조회 실패 (API 응답 없음)")
+    except Exception as e:
+        print(f" -> [Error] 자산 동기화 중 오류: {e}")
     
     while True:
-        print(f"\n[{mode_name} 메인 메뉴]")
+        # 감시 상태 표시
+        monitor_status = "ON" if kis_websocket.is_active() else "OFF"
+
+        print(f"\n[{mode_name} 메인 메뉴] | 감시 상태: {monitor_status}")
         print(" 1. 전체 시장 자동 스캔 (Auto Scan)")
         print(" 2. 특정 종목 검색 (Sniper Search)")
         print(" 3. 대화 모드 (Free Talk)")
         print(" 4. 종료 (Exit)")
-        print(" 5. 실시간 감시 모드 (Real-time Watch)") # [NEW]
+        
+        # 감시 상태에 따라 메뉴 텍스트 변경
+        if kis_websocket.is_active():
+            print(" 5. 실시간 감시 중단 (Stop Monitoring)")
+        else:
+            print(" 5. 실시간 감시 시작 (Start Monitoring)")
         
         menu = input(">> 입력: ")
-        
         results = []
         
         if menu == '1':
             try:
-                targets = kis_scan.get_dynamic_targets()
+                # DB 읽기 전용 호출 (키워드 자동 번역 적용)
+                targets = mervis_bigquery.get_tickers_from_db(limit=40, tags=[]) 
                 
-                if not targets:
-                    print("[대기] 분석 대상 없음. 5초 후 재시도.")
-                    time.sleep(5)
-                    continue
-                    
                 print(f"\n[머비스] 총 {len(targets)}개 핵심 종목 분석 시작. (중단: Ctrl+C)")
                 
                 for i, item in enumerate(targets):
@@ -100,7 +117,6 @@ def run_system():
             code = input(">> 분석할 종목 티커 입력 : ").upper().strip()
             if not code: continue
             print(f"[머비스] '{code}' 정밀 분석 시작...", end="")
-            sys.stdout.flush()
             target_item = {"code": code, "name": "Manual Search", "price": 0}
             res = mervis_brain.analyze_stock(target_item)
             if res:
@@ -111,7 +127,8 @@ def run_system():
 
         elif menu == '3':
             print("[머비스] 대화 모드로 진입합니다. (종료: 'exit')")
-            context = "[System Info] User entered 'Free Talk' mode."
+            print(" * 백그라운드 감시 로그가 계속 출력될 수 있습니다.")
+            context = f"[System] User in Free Talk. Monitor: {monitor_status}"
             act = mervis_ai.start_consulting(context)
             if act == "EXIT":
                 print("[시스템] 프로그램을 종료합니다.")
@@ -119,43 +136,32 @@ def run_system():
             continue 
 
         elif menu == '4':
+            kis_websocket.stop_monitoring()
             print("[시스템] 프로그램을 종료합니다.")
             sys.exit(0)
 
-        # 실시간 감시 모드
         elif menu == '5':
-            print("\n[머비스] 실시간 감시 모드를 준비합니다...")
-            
-            # 1. 감시 대상 로딩 (Scan 모듈 활용)
-            targets = kis_scan.get_dynamic_targets()
-            if not targets:
-                print("[오류] 감시할 대상이 없습니다. DB 상태를 확인하세요.")
-                continue
-                
-            print(f"[시스템] 감시 대상: {len(targets)}개 종목")
-            print("[시스템] 웹소켓 연결 시도 중... (중단: Ctrl+C)")
-            
-            # 2. 웹소켓 실행 (Blocking)
-            kis_websocket.run_monitoring(targets)
-            continue # 감시 끝나면 메뉴로 복귀
+            if kis_websocket.is_active():
+                kis_websocket.stop_monitoring()
+            else:
+                # DB에서 타겟 가져와서 시작
+                targets = mervis_bigquery.get_tickers_from_db(limit=40)
+                if targets:
+                    kis_websocket.start_background_monitoring(targets)
+                else:
+                    print("[오류] 감시할 대상이 없습니다. 1번 스캔을 먼저 하세요.")
+            continue
             
         else:
             print("[알림] 올바른 메뉴를 선택해주세요.")
             continue
         
-        # 1, 2번 메뉴 실행 결과가 있을 때만 상담 진행
-        if not results:
-            continue
-        
-        full_report = f"[{mode_name} 리포트]\n"
-        for r in results:
-            full_report += f"[{r['code']}]: {r['report']}\n---\n"
+        if results:
+            full_report = f"[{mode_name} 리포트]\n"
+            for r in results:
+                full_report += f"[{r['code']}]: {r['report']}\n---\n"
             
-        act = mervis_ai.start_consulting(full_report)
-        
-        if act == "EXIT":
-            print("[시스템] 프로그램을 종료합니다.")
-            sys.exit(0)
+            mervis_ai.start_consulting(full_report)
 
 if __name__ == "__main__":
     run_system()
