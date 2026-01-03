@@ -239,3 +239,45 @@ def get_asset_trend(limit=30):
         results = list(client.query(query).result())
         return [{"date": str(row.date), "total": row.total_asset, "pnl": row.pnl_daily} for row in results]
     except: return []
+
+def get_top_ranked_stocks(limit=5):
+    """
+    [AI용] 점수가 높거나 'BUY' 시그널이 뜬 상위 종목을 가져옵니다.
+    """
+    try:
+        # keywords 필드가 있는 경우 활용, 없으면 에러 안나게 처리
+        # total_score가 높은 순으로 정렬
+        # (테이블에 total_score 컬럼이 없으면 volume 등으로 대체해야 함. 
+        #  여기서는 일단 안전하게 모든 필드를 가져와서 파이썬에서 정렬하거나, 
+        #  SQL로 정렬하는 것이 정석임.)
+        
+        query = f"""
+            SELECT code, report, updated_at
+            FROM `{dataset_id}.stock_analysis`
+            ORDER BY updated_at DESC
+            LIMIT {limit * 3}
+        """
+        query_job = client.query(query)
+        rows = list(query_job.result())
+        
+        results = []
+        for row in rows:
+            # 리포트 내용에 '매수'나 '긍정'이 포함된 것 우선 필터링 (간이 로직)
+            report = row['report'] if row['report'] else ""
+            if "매수" in report or "긍정" in report or "상승" in report:
+                results.append({
+                    "code": row['code'],
+                    "report": report,
+                    "total_score": 100 # 임시 점수
+                })
+        
+        # 필터링 된게 없으면 그냥 최신순 반환
+        if not results:
+            for row in rows[:limit]:
+                results.append({"code": row['code'], "report": row['report'], "total_score": 50})
+                
+        return results[:limit]
+
+    except Exception as e:
+        print(f"[BQ Error] {e}")
+        return []

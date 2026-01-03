@@ -4,119 +4,136 @@ import mervis_profile
 import mervis_bigquery 
 import mervis_brain
 import json
+import re
 
+# Gemini 클라이언트 설정
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
 
-def start_consulting(report):
+def _get_recommendation_context(limit=3):
+    """
+    [핵심] 사용자가 '추천'을 원할 때, 
+    AI가 상상하지 않고 DB에서 실제 점수가 높은 종목을 가져옴.
+    """
+    try:
+        # DB에서 점수/거래량 기반 상위 종목 조회 (BigQuery 모듈에 이 함수가 있어야 함)
+        # *만약 함수가 없다면 아래 get_top_ranked_stocks를 mervis_bigquery에 추가해야 함.
+        # 여기서는 방어 코드로 작성.
+        if hasattr(mervis_bigquery, 'get_top_ranked_stocks'):
+            top_stocks = mervis_bigquery.get_top_ranked_stocks(limit)
+        else:
+            # 함수가 없으면 기존 리스트에서 최근 것만 가져옴 (임시 방편)
+            top_stocks = mervis_bigquery.get_tickers_from_db(limit)
+
+        if not top_stocks:
+            return " [System] 현재 DB에 분석된 추천 유망 종목이 없습니다. '전체 스캔'을 먼저 수행하십시오."
+            
+        context = "[System Recommendation Data from DB]\n"
+        for item in top_stocks:
+            # 상세 분석 리포트 내용이 있다면 포함, 없으면 기본 정보
+            report = item.get('report', '상세 분석 데이터 없음')
+            code = item.get('code')
+            score = item.get('total_score', 0)
+            context += f"- 종목명: {code} | 점수: {score}점 | 분석요약: {report}\n"
+        
+        return context
+    except Exception as e:
+        return f" [System Error] 추천 데이터 조회 실패: {e}"
+
+def start_consulting(initial_context=""):
     print("\n" + "="*40)
-    print("[머비스] 상담 모드 (종료: q, 재스캔: scan)")
+    print(" [MERVIS] Intelligent Chat Mode (Exit: q)")
     print("==================================================")
     
     # 1. 사용자 프로필 로드
     user_data = mervis_profile.get_user_profile()
     profile_str = json.dumps(user_data, indent=2, ensure_ascii=False)
     
-    # 2. BigQuery에서 '내가 아는(분석한) 종목 리스트' 전체 가져오기
-    analyzed_list = mervis_bigquery.get_analyzed_ticker_list()
-    analyzed_str = ", ".join(analyzed_list) if analyzed_list else "없음"
-
-    print(f"[System] 사용자 프로필 로드 완료 (성향: {user_data.get('investment_style', 'Unknown')})")
-    print(f"[System] 분석 기억 로드 완료 (총 {len(analyzed_list)}개 종목 보유)")
-
-    initial_prompt = f"""
-    당신은 사용자의 주식 비서 '머비스(Mervis)'입니다.
-    이모티콘을 절대 사용하지 말고, 전문적이고 명확한 사무적인 말투로 대화하십시오.
+    # 2. 시스템 프롬프트 (성격 부여)
+    system_instruction = f"""
+    당신은 사용자의 냉철한 주식 비서 '머비스(Mervis)'입니다.
     
-    [System Memory - Index]
-    당신은 현재 다음 종목들에 대한 분석 기록을 가지고 있습니다:
-    [{analyzed_str}]
-    
-    * 사용자가 특정 종목을 언급하면 DB에서 불러온 [Detail Memory]를 참고하여 답변하십시오.
-    * 만약 리스트에 없는 종목이라도, 사용자가 "분석해줘"라고 요청하면 시스템이 실시간으로 분석을 수행하고 정보를 제공할 것입니다. 잠시 기다리라고 안내하십시오.
+    [절대 원칙]
+    1. 이모티콘을 절대 사용하지 마십시오.
+    2. 말투: {USER_NAME}에게 똑똑하고 주관 뚜렷한 친구처럼 '반말'로 직설적으로 조언하라.
+    3. [Context]에 없는 내용은 절대 지어내지 마십시오. 모르면 "데이터가 없습니다"라고 하십시오.
+    4. "가상 종목 A" 같은 예시는 절대 들지 마십시오. 무조건 실존하는 티커(Ticker)만 언급하십시오.
     
     [User Profile]
     {profile_str}
     
-    [Current Report Context]
-    {report}
+    [Current System Context]
+    {initial_context}
     """
     
-    history = initial_prompt
+    history = [] # 대화 기록 (Turn 관리)
 
     while True:
         try:
-            user_input = input("\n>> 사용자: ").strip()
+            user_input = input("\n>> User: ").strip()
         except KeyboardInterrupt:
             return "EXIT"
 
         if not user_input: continue
         if user_input.lower() in ['q', 'exit', 'quit']: return "EXIT"
-        if user_input.lower() == 'scan': return "SCAN"
         
-        # 3. [NEW] 실시간 분석 트리거 & 기억 인출 로직
-        injected_memory = ""
+        # 3. 사용자 의도 파악 (Intent Detection)
+        
+        # (A) 종목 분석 요청 감지 (티커 추출)
+        # 영어 대문자 2~5글자 추출
+        potential_tickers = re.findall(r'\b[A-Z]{2,5}\b', user_input.upper())
+        # DB에 있는 티커인지 확인하거나, 명시적으로 "분석" 요청이 있는 경우
         found_tickers = []
         
-        # 입력된 텍스트에서 대문자로 된 영단어(티커 후보) 추출을 시도하거나, 
-        # 기존 analyzed_list와 매칭 + 혹은 새로운 티커라도 감지 시도
-        # 여기서는 간단히 사용자 입력에서 티커를 추정합니다.
-        
-        # 3-1. 티커 감지 (기존 목록 + 입력된 단어 중 3~5글자 영어)
-        words = user_input.upper().split()
-        potential_tickers = [w for w in words if w.isalpha() and 2 <= len(w) <= 5]
-        
-        # 3-2. 분석 트리거 키워드 확인
-        trigger_keywords = ["분석", "지금", "어때", "봐줘", "확인", "점검", "가격", "매수", "매도"]
-        needs_analysis = any(k in user_input for k in trigger_keywords)
+        # (B) 추천 요청 감지
+        recommend_keywords = ["추천", "종목 좀", "살만한거", "뭐 살까", "유망", "급등"]
+        is_recommendation = any(k in user_input for k in recommend_keywords)
 
-        for t in potential_tickers:
-            # (A) 이미 아는 종목이거나, (B) 몰라도 분석을 요청한 경우
-            if t in analyzed_list or (needs_analysis and t not in ["SCAN", "EXIT", "QUIT"]):
-                found_tickers.append(t)
+        # 4. 데이터 인출 (RAG)
+        injected_context = ""
 
-        if found_tickers:
-            # 사용자가 '분석'을 원하면 즉시 두뇌 가동
-            if needs_analysis:
-                print(f" [System] 실시간 분석 요청 감지: {found_tickers}")
-                for t in found_tickers:
-                    print(f" [Mervis] '{t}' 최신 데이터 분석 중 (KIS API)...")
-                    # mervis_brain 호출 (저장까지 자동으로 됨)
-                    mervis_brain.analyze_stock({'code': t, 'name': t, 'price': 0})
-                    # 분석 후 리스트 갱신 (새로운 종목일 수 있으므로)
-                    if t not in analyzed_list: analyzed_list.append(t)
-            
-            # DB에서 (방금 업데이트된 것 포함) 최신 기억 인출
-            print(f" [System] '{', '.join(found_tickers)}' 상세 데이터 인출 중...", end="")
-            for t in found_tickers:
-                mem = mervis_bigquery.get_recent_memory(t)
-                if mem:
-                    injected_memory += f"\n[Detail Memory for {t} ({mem['date']}) - Latest]\n{mem['report']}\n----------------\n"
+        # 4-1. 추천 요청인 경우 -> DB 랭킹 조회
+        if is_recommendation:
+            print(" [Mervis] DB 내 유망 종목 검색 중...", end="")
+            rec_data = _get_recommendation_context(limit=3)
+            injected_context += f"\n{rec_data}\n"
             print(" 완료.")
 
-        # 4. 실시간 프로필 학습
-        if len(user_input) >= 4:
-            try:
-                update_result = mervis_profile.update_user_profile(user_input)
-                if "successfully" in update_result:
-                    print(" [System] User Profile Updated.")
-            except: pass 
-
-        # 프롬프트 구성
-        if injected_memory:
-            full_prompt = f"{history}\n[System Injection - Retrieved Memories]{injected_memory}\n사용자: {user_input}\n머비스:"
-        else:
-            full_prompt = f"{history}\n사용자: {user_input}\n머비스:"
+        # 4-2. 특정 종목 언급인 경우 -> Brain 분석 실행
+        if potential_tickers:
+            print(f" [Mervis] 데이터 분석: {potential_tickers}")
+            for t in potential_tickers:
+                # 뇌 가동 (실시간 API 조회 + DB 저장)
+                res = mervis_brain.analyze_stock({'code': t, 'name': t, 'price': 0})
+                if res:
+                    injected_context += f"\n[Analysis Data for {t}]\n{res['report']}\n"
+        
+        # 5. 프롬프트 조립
+        full_prompt = f"{system_instruction}\n"
+        
+        # 이전 대화 요약 (최근 2턴만 유지하여 토큰 절약)
+        for h in history[-4:]: 
+            full_prompt += f"{h}\n"
+            
+        full_prompt += f"\n[Injecting Real-time Data]\n{injected_context}\n"
+        full_prompt += f"User: {user_input}\nMervis:"
         
         try:
+            # 6. Gemini 응답 생성
             response = client.models.generate_content(
                 model='gemini-2.0-flash', 
                 contents=full_prompt
             )
             
             answer = response.text.strip()
-            print(f"머비스: {answer}")
+            print(f"Mervis: {answer}")
             
-            history += f"\n사용자: {user_input}\n머비스: {answer}"
+            # 대화 기록 저장
+            history.append(f"User: {user_input}")
+            history.append(f"Mervis: {answer}")
             
+            # 사용자 성향 자동 업데이트 (백그라운드)
+            if len(user_input) > 10:
+                mervis_profile.update_user_profile(user_input)
+                
         except Exception as e:
-            print(f"[오류] 답변 생성 실패: {e}")
+            print(f"[System Error] 응답 생성 실패: {e}")

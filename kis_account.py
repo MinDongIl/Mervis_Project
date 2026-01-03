@@ -4,25 +4,53 @@ import mervis_state
 import kis_auth
 import secret
 
-# [설정] 해외주식 잔고조회 API 정보
-# 실전/모의 TR ID가 다를 수 있으나, 일반적으로 URL만 다르고 구조는 같음
-# 여기서는 일반적인 해외주식 잔고 조회(CTRP6504R) 기준 작성
-# 모의투자의 경우 TR ID가 VTRP6504R 일 수 있음 (자동 분기 처리)
+# [설정] 해외주식 잔고 및 자산 조회 통합 모듈
+
+def _get_api_config():
+    """모드에 따른 API 설정값 반환"""
+    mode = mervis_state.get_mode()
+    
+    if mode == "REAL":
+        base_url = secret.URL_REAL
+        app_key = secret.APP_KEY_REAL
+        app_secret = secret.APP_SECRET_REAL
+        # secret.py 변수명 불일치 오류 방지 (CANO vs CANO_REAL)
+        # 사용자 환경에 맞춰 안전하게 매핑
+        cano = getattr(secret, 'CANO_REAL', getattr(secret, 'CANO', ''))
+        prdt = getattr(secret, 'ACNT_PRDT_CD_REAL', getattr(secret, 'ACNT_PRDT_CD', ''))
+        # TR ID (실전용)
+        tr_id_balance = "CTRP6504R"  # 계좌 잔고(자산)
+        tr_id_stock = "VTTS3012R"    # (주의) 주식 잔고는 보통 JTTT3012R(매도) 등 거래용과 다름, 단순 조회는 inquire-balance 참조
+    else:
+        base_url = secret.URL_MOCK
+        app_key = secret.APP_KEY_MOCK
+        app_secret = secret.APP_SECRET_MOCK
+        cano = getattr(secret, 'CANO_MOCK', '')
+        prdt = getattr(secret, 'ACNT_PRDT_CD_MOCK', '')
+        # TR ID (모의용)
+        tr_id_balance = "VTRP6504R"  # 계좌 잔고(자산) (접두어 V 확인 필요)
+        tr_id_stock = "VTTS3012R"    # 모의투자용
+
+    return {
+        "mode": mode,
+        "base_url": base_url,
+        "app_key": app_key,
+        "app_secret": app_secret,
+        "cano": cano,
+        "prdt": prdt,
+        "tr_id_balance": tr_id_balance,
+        "tr_id_stock": tr_id_stock
+    }
 
 def get_my_total_assets():
     """
-    계좌의 총 자산, 예수금, 주식 평가금, 수익률을 조회합니다.
+    [통합 자산 조회]
+    계좌의 총 자산, 평가금, 수익률 조회
     Return: {'total': 0, 'cash': 0, 'stock': 0, 'pnl': 0.0}
     """
-    mode = mervis_state.get_mode()
-    base_url = "https://openapi.koreainvestment.com:9443" if mode == "REAL" else "https://openapivts.koreainvestment.com:29443"
-    
-    # TR ID 설정 (실전: CTRP6504R / 모의: VTRP6504R)
-    # *주의: 모의투자는 TR ID가 다를 수 있으니 문서 확인 필요. 통상 접두어 V 붙음.
-    tr_id = "CTRP6504R" if mode == "REAL" else "VTRP6504R"
-
-    # 1. 토큰 및 헤더 준비
+    config = _get_api_config()
     token = kis_auth.get_access_token()
+    
     if not token:
         print(" [Account] 토큰 발급 실패.")
         return None
@@ -30,80 +58,51 @@ def get_my_total_assets():
     headers = {
         "content-type": "application/json; charset=utf-8",
         "authorization": f"Bearer {token}",
-        "appkey": secret.APP_KEY_REAL if mode == "REAL" else secret.APP_KEY_MOCK,
-        "appsecret": secret.APP_SECRET_REAL if mode == "REAL" else secret.APP_SECRET_MOCK,
-        "tr_id": tr_id,
+        "appkey": config['app_key'],
+        "appsecret": config['app_secret'],
+        "tr_id": config['tr_id_balance'], # 자산 조회용 TR
         "custtype": "P"
     }
 
-    # 2. 파라미터 설정 (계좌번호)
-    # 해외주식은 국가코드(840:미국), 통화코드(USD) 필수
     params = {
-        "CANO": secret.CANO,            # 종합계좌번호 앞 8자리
-        "ACNT_PRDT_CD": secret.ACNT_PRDT_CD, # 계좌번호 뒤 2자리
-        "WCRC_FRCR_DVS_CD": "02",       # 01:원화, 02:외화 (보통 USD 기준 조회 시 02)
-        "NATN_CD": "840",               # 840: 미국
-        "TR_MK": "00",                  # 거래시장코드 (00:전체)
-        "CTX_AREA_FK": "",              # 연속조회용 (첫 조회라 공란)
-        "CTX_AREA_NK": ""               # 연속조회용 (첫 조회라 공란)
+        "CANO": config['cano'],
+        "ACNT_PRDT_CD": config['prdt'],
+        "WCRC_FRCR_DVS_CD": "02",   # 02: 외화(USD) 기준
+        "NATN_CD": "840",           # 840: 미국
+        "TR_MK": "00",
+        "CTX_AREA_FK": "",
+        "CTX_AREA_NK": ""
     }
-    
-    # 3. API 호출
+
     path = "/uapi/overseas-stock/v1/trading/inquire-present-balance"
-    url = f"{base_url}{path}"
+    url = f"{config['base_url']}{path}"
 
     try:
-        res = requests.get(url, headers=headers, params=params)
+        res = requests.get(url, headers=headers, params=params, timeout=5)
         data = res.json()
-        
-        # [디버깅] 응답 확인용 (필요시 주석 해제)
-        # print(json.dumps(data, indent=2, ensure_ascii=False))
 
         if data['rt_cd'] != '0':
             print(f" [Account Error] {data['msg1']}")
             return None
         
-        # 4. 데이터 파싱
-        # output1: 종목별 잔고 리스트
-        # output2: 계좌 전체 현황 (여기서 총액 추출)
         summary = data['output2']
-        
-        # 데이터가 없을 경우 방어
         if not summary:
             return {'total': 0.0, 'cash': 0.0, 'stock': 0.0, 'pnl': 0.0}
 
-        # KIS API 필드명 (해외주식 기준)
-        # tot_asst_amt: 총자산(원화 환산 등 포함될 수 있음, 보통 외화평가액 사용)
-        # tot_evlu_pfls_amt: 총 평가 손익
-        # ovrs_rlzt_pfls_amt: 해외 실현 손익
-        # frcr_pchs_amt1: 외화 매입 금액 (투자 원금)
-        # ovrs_tot_pfls: 해외 총 수익률 (%)
-        
-        # *API 버전에 따라 필드명이 다를 수 있어 안전하게 get 사용
+        # 데이터 파싱 (안전하게 get 사용)
         total_pnl = float(summary.get('tot_evlu_pfls_amt', 0)) # 평가 손익
         buy_amt = float(summary.get('frcr_pchs_amt1', 0))      # 매입 금액
         
-        # 평가 금액 (매입 + 손익)
         stock_val = buy_amt + total_pnl
-        
-        # 수익률 계산 (매입금이 0이면 0%)
         pnl_rate = float(summary.get('ovrs_tot_pfls', 0))
         
-        # 예수금 (총자산이 명확지 않으면 API 구조상 계산 필요할 수 있음)
-        # 여기서는 편의상 output2의 tot_asst_amt(총자산) 활용 시도
-        # *주의: 해외주식 API는 예수금을 별도로 'inquire-psamount'로 조회해야 정확한 경우가 많음
-        # 일단은 output2에 있는 정보로 추정
-        # (실제로는 예수금 API를 따로 부르는게 가장 정확하나, 약식으로 진행)
-        # tot_asst_amt가 없으면 매입금액을 자산으로 가정 (예수금 0)
-        # 민동일 님 환경에 맞춰 나중에 정교화 가능
-        
-        # 임시 로직: 주식가치 = 총자산으로 가정 (예수금 조회 API는 별도라 복잡해짐 방지)
-        # 추후 필요하면 예수금 조회 추가 가능.
-        total_asset = stock_val # (일단 주식 가치만 자산으로 잡음, 현금은 0으로 가정)
+        # 임시: 예수금(cash)은 별도 API 필요하므로 일단 0 혹은 잔여 예수금 필드가 있다면 매핑
+        # output2에 dncl_amt(예수금) 등이 있는지 확인 필요하나, 해외주식은 보통 별도.
+        # 보수적으로 주식 가치 = 총 자산으로 잡음.
         
         return {
-            "total": round(total_asset, 2),
-            "cash": 0.0, # 예수금 API 추가 전까지 0으로 처리 (보수적 접근)
+            "total": round(stock_val, 2),
+            "cash": 0.0, 
             "stock": round(stock_val, 2),
             "pnl": round(pnl_rate, 2)
         }
@@ -112,7 +111,59 @@ def get_my_total_assets():
         print(f" [Account System Error] {e}")
         return None
 
+def get_stock_qty(ticker):
+    """
+    [특정 종목 잔고 조회]
+    특정 티커(ticker)의 보유 수량을 리턴합니다. (매도 시 확인용)
+    Return: (int) 수량
+    """
+    config = _get_api_config()
+    token = kis_auth.get_access_token()
+    if not token: return 0
+    
+    # 잔고 조회 API (inquire-balance)를 재활용하거나 별도 TR을 쓸 수 있음.
+    # inquire-present-balance (위에서 쓴거)의 output1을 뒤지면 됨.
+    
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {token}",
+        "appkey": config['app_key'],
+        "appsecret": config['app_secret'],
+        "tr_id": config['tr_id_balance'], # 같은 API 써도 됨
+        "custtype": "P"
+    }
+
+    params = {
+        "CANO": config['cano'],
+        "ACNT_PRDT_CD": config['prdt'],
+        "WCRC_FRCR_DVS_CD": "02",
+        "NATN_CD": "840",
+        "TR_MK": "00",
+        "CTX_AREA_FK": "",
+        "CTX_AREA_NK": ""
+    }
+    
+    path = "/uapi/overseas-stock/v1/trading/inquire-present-balance"
+    url = f"{config['base_url']}{path}"
+
+    try:
+        res = requests.get(url, headers=headers, params=params, timeout=5)
+        data = res.json()
+        
+        if data['rt_cd'] == '0':
+            # output1: 보유 종목 리스트
+            for item in data['output1']:
+                # ovrs_pdno: 종목코드 (티커)
+                if item['ovrs_pdno'] == ticker:
+                    # cblc_qty13 or ovrs_cblc_qty : 잔고수량 (API마다 다름, 보통 ord_psbl_qty(주문가능) 확인)
+                    # 여기선 ccld_qty_smtl1(체결수량합계) 혹은 ord_psbl_qty(주문가능수량)을 봐야함.
+                    # 안전하게 'ord_psbl_qty'(주문가능수량)을 리턴
+                    return int(float(item.get('ord_psbl_qty', 0)))
+        return 0
+    except:
+        return 0
+
 if __name__ == "__main__":
-    # 테스트 실행
-    print("--- Account Check ---")
+    print("--- Account Info ---")
     print(get_my_total_assets())
+    # print("Tesla Qty:", get_stock_qty("TSLA"))
