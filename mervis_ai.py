@@ -8,6 +8,7 @@ import re
 
 # Gemini 클라이언트 설정
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
+USER_NAME = getattr(secret, 'USER_NAME', '사용자')
 
 def _get_recommendation_context(limit=3):
     """

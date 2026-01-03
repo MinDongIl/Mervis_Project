@@ -76,16 +76,16 @@ def calculate_technical_indicators(daily_data):
         trend = "상승추세(Bullish)" if close > ma50 else "하락추세(Bearish)"
         
         # (2) RSI 상태
-        if rsi <= 30: signals.append("🔥RSI 과매도(침체권) - 기술적 반등 가능성 높음")
-        elif rsi >= 70: signals.append("💧RSI 과매수(과열권) - 조정 가능성 주의")
+        if rsi <= 30: signals.append("RSI 과매도(침체권) - 기술적 반등 가능성 높음")
+        elif rsi >= 70: signals.append("RSI 과매수(과열권) - 조정 가능성 주의")
         else: signals.append(f"RSI 중립 ({rsi:.1f})")
         
         # (3) MACD 시그널
         if macd_val > signal_val:
-            if prev_macd <= prev_signal: signals.append("★MACD 골든크로스 발생 (매수 신호)★")
+            if prev_macd <= prev_signal: signals.append("MACD 골든크로스 발생 (매수 신호)")
             else: signals.append("MACD 매수 우위 유지")
         else:
-            if prev_macd >= prev_signal: signals.append("☠️MACD 데드크로스 발생 (매도 신호)☠️")
+            if prev_macd >= prev_signal: signals.append("MACD 데드크로스 발생 (매도 신호)")
             else: signals.append("MACD 매도 우위 유지")
             
         # (4) 이격도 (MA20 기준)
