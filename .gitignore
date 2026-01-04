@@ -19,6 +19,9 @@ mervis_history.json
 service_account.json
 *.json
 
+# 로그 내용
+mervis.log
+
 # 파이썬 캐시 및 시스템 파일
 __pycache__/
 *.pyc

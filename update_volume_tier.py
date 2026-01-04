@@ -59,22 +59,19 @@ def generate_search_keywords(sector, name):
         keywords.update(["AI", "ROBOT"])
 
     # --- 3. [핵심] 자동 추출 (빈칸 방지 안전장치) ---
-    # 섹터명에서 특수문자(&, -, /)를 공백으로 치환하고 단어로 쪼갬
-    # 예: "Household & Personal Products" -> ["HOUSEHOLD", "PERSONAL", "PRODUCTS"]
-    
-    # 3-1. 불용어(Stopwords) 제거: 검색에 의미 없는 단어들
     stopwords = ["AND", "&", "OR", "OF", "THE", "SERVICES", "PRODUCTS", "INC", "LTD", "CORP", "HOLDINGS", "GROUP", "SOLUTIONS", "SYSTEMS"]
     
-    # 정규식으로 한글/영문/숫자만 남기고 나머지는 공백 처리
     clean_sec = re.sub(r'[^0-9a-zA-Z가-힣]', ' ', sec_str)
     
     for word in clean_sec.split():
         if len(word) >= 2 and word not in stopwords:
-            keywords.add(word) # 섹터에 있는 단어 자체를 키워드로 등록
+            keywords.add(word)
 
     return ", ".join(list(keywords))
 
-def update_volume_tier():
+# [수정] 함수 이름 변경 (update_volume_tier -> update_volume_data)
+# main.py에서 호출하는 이름과 일치시킴
+def update_volume_data():
     client = get_client()
     if not client: return
 
@@ -160,7 +157,7 @@ def update_volume_tier():
         status = data['status']
         if status in count_summary: count_summary[status] += 1
         
-        # [NEW] 개선된 키워드 생성 로직 적용
+        # 키워드 생성 로직 적용
         sector = info.get('sector', '')
         name = info.get('name', '')
         keywords = generate_search_keywords(sector, name)
@@ -203,4 +200,4 @@ def update_volume_tier():
         print(f"[Critical Error] DB 저장 실패: {e}")
 
 if __name__ == "__main__":
-    update_volume_tier()
+    update_volume_data()

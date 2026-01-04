@@ -271,3 +271,91 @@
 2026-01-04 02:12:10 [INFO] AFC is enabled with max remote calls: 10.
 2026-01-04 02:12:13 [INFO] HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent "HTTP/1.1 200 OK"
 2026-01-04 02:18:06 [INFO] User requested exit.
+2026-01-04 18:14:19 [INFO] System Start.
+2026-01-04 18:14:21 [INFO] DB outdated. Starting update_volume_tier.
+2026-01-04 18:14:21 [ERROR] DB Update Failed: module 'update_volume_tier' has no attribute 'update_volume_data'
+2026-01-04 18:15:17 [INFO] Mode set to 실전(REAL)
+2026-01-04 18:15:17 [WARNING] Asset fetch failed.
+2026-01-04 18:17:49 [INFO] User requested exit.
+2026-01-04 18:20:49 [INFO] System Start.
+2026-01-04 18:20:51 [INFO] DB outdated. Starting update_volume_tier.
+2026-01-04 18:23:26 [ERROR] $IAS: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:23:33 [ERROR] HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: ADAP"}}}
+2026-01-04 18:23:34 [ERROR] $ADAP: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:23:35 [ERROR] $WI: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:23:41 [ERROR] $PRO: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:23:43 [ERROR] HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"Quote not found for symbol: OPT"}}}
+2026-01-04 18:23:44 [ERROR] $OPT: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:23:45 [ERROR] $SOL: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:23:46 [ERROR] $HMST: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:23:46 [ERROR] $RNBW: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:23:48 [ERROR] $VERB: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:23:54 [ERROR] $BHLB: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:23:56 [ERROR] $KUKE: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:23:57 [ERROR] $AGFY: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:23:59 [ERROR] $ADN: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:23:59 [ERROR] 
+13 Failed downloads:
+2026-01-04 18:23:59 [ERROR] ['IAS', 'WI', 'PRO', 'SOL', 'RNBW']: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:23:59 [ERROR] ['ADAP', 'OPT', 'HMST', 'VERB', 'BHLB', 'KUKE', 'AGFY', 'ADN']: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:02 [ERROR] $WTGUR: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:24:02 [ERROR] $UYSCR: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:24:04 [ERROR] $RIBBR: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:24:05 [ERROR] $CUBA: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:24:05 [ERROR] $FGXCU: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:24:07 [ERROR] $PHT: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:08 [ERROR] $AMBI: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:09 [ERROR] $CLBR: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:09 [ERROR] $MIO: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:09 [ERROR] $MAV: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:11 [ERROR] $MHI: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:11 [ERROR] $ATMCR: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:24:13 [ERROR] $CHN: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:13 [ERROR] $JPI: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:13 [ERROR] $PHD: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:14 [ERROR] $ENX: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:14 [ERROR] 
+16 Failed downloads:
+2026-01-04 18:24:14 [ERROR] ['WTGUR', 'UYSCR', 'RIBBR', 'CUBA', 'FGXCU', 'ATMCR']: possibly delisted; no price data found  (period=5d)
+2026-01-04 18:24:14 [ERROR] ['PHT', 'AMBI', 'CLBR', 'MIO', 'MAV', 'MHI', 'CHN', 'JPI', 'PHD', 'ENX']: possibly delisted; no price data found  (period=5d) (Yahoo error = "No data found, symbol may be delisted")
+2026-01-04 18:24:18 [INFO] DB Update Complete.
+2026-01-04 18:24:20 [INFO] Mode set to 실전(REAL)
+2026-01-04 18:24:21 [ERROR] [Account Error] ERROR : INPUT_FIELD_NAME TR_MKET_CD (Code: OPSQ2001)
+2026-01-04 18:24:21 [WARNING] Asset fetch failed.
+2026-01-04 18:24:54 [INFO] User requested exit.
+2026-01-04 18:28:49 [INFO] System Start.
+2026-01-04 18:28:50 [INFO] DB is up-to-date.
+2026-01-04 18:28:53 [INFO] Mode set to 실전(REAL)
+2026-01-04 18:28:54 [ERROR] [Account Error] ERROR : INPUT_FIELD_NAME INQR_DVSN_CD (Code: OPSQ2001)
+2026-01-04 18:28:54 [WARNING] Asset fetch failed.
+2026-01-04 18:30:02 [INFO] User requested exit.
+2026-01-04 18:31:26 [INFO] System Start.
+2026-01-04 18:31:28 [INFO] DB is up-to-date.
+2026-01-04 18:31:29 [INFO] Mode set to 실전(REAL)
+2026-01-04 18:31:31 [INFO] Asset Synced: Total=$0.0, PnL=0.0%
+2026-01-04 18:33:23 [INFO] User requested exit.
+2026-01-04 18:33:28 [INFO] System Start.
+2026-01-04 18:33:30 [INFO] DB is up-to-date.
+2026-01-04 18:33:31 [INFO] Mode set to 실전(REAL)
+2026-01-04 18:33:33 [INFO] Asset Synced: Total=$0.0, PnL=0.0%
+2026-01-04 18:33:38 [INFO] User requested exit.
+2026-01-04 18:33:43 [INFO] System Start.
+2026-01-04 18:33:44 [INFO] DB is up-to-date.
+2026-01-04 18:33:46 [INFO] Mode set to 실전(REAL)
+2026-01-04 18:33:47 [INFO] Asset Synced: Total=$0.0, PnL=0.0%
+2026-01-04 18:35:18 [INFO] User requested exit.
+2026-01-04 18:36:22 [INFO] System Start.
+2026-01-04 18:36:24 [INFO] DB is up-to-date.
+2026-01-04 18:36:26 [INFO] Mode set to 실전(REAL)
+2026-01-04 18:36:28 [INFO] Asset Synced: Total=$0.0, PnL=0.0%
+2026-01-04 18:38:31 [INFO] User requested exit.
+2026-01-04 18:38:35 [INFO] System Start.
+2026-01-04 18:38:37 [INFO] DB is up-to-date.
+2026-01-04 18:38:39 [INFO] Mode set to 실전(REAL)
+2026-01-04 18:38:41 [INFO] Asset Synced: Total=$0.0, PnL=0.0%
+2026-01-04 18:39:21 [INFO] User requested exit.
+2026-01-04 18:52:25 [INFO] System Start.
+2026-01-04 18:52:27 [INFO] DB is up-to-date.
+2026-01-04 18:52:27 [INFO] Mode set to 실전(REAL)
+2026-01-04 18:52:29 [INFO] Asset Synced: Total=$0.0, PnL=0.0%
+2026-01-04 18:52:49 [INFO] User requested exit.
