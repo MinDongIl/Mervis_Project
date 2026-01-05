@@ -3,6 +3,7 @@ import secret
 import mervis_profile 
 import mervis_bigquery 
 import mervis_brain
+import kis_websocket  # [추가] 알림 설정 연동
 import json
 import re
 
@@ -12,25 +13,19 @@ USER_NAME = getattr(secret, 'USER_NAME', '사용자')
 
 def _get_recommendation_context(limit=3):
     """
-    [핵심] 사용자가 '추천'을 원할 때, 
-    AI가 상상하지 않고 DB에서 실제 점수가 높은 종목을 가져옴.
+    [핵심] 사용자가 '추천'을 원할 때 DB 데이터 조회
     """
     try:
-        # DB에서 점수/거래량 기반 상위 종목 조회 (BigQuery 모듈에 이 함수가 있어야 함)
-        # *만약 함수가 없다면 아래 get_top_ranked_stocks를 mervis_bigquery에 추가해야 함.
-        # 여기서는 방어 코드로 작성.
         if hasattr(mervis_bigquery, 'get_top_ranked_stocks'):
             top_stocks = mervis_bigquery.get_top_ranked_stocks(limit)
         else:
-            # 함수가 없으면 기존 리스트에서 최근 것만 가져옴 (임시 방편)
             top_stocks = mervis_bigquery.get_tickers_from_db(limit)
 
         if not top_stocks:
-            return " [System] 현재 DB에 분석된 추천 유망 종목이 없습니다. '전체 스캔'을 먼저 수행하십시오."
+            return " [System] 현재 DB에 분석된 추천 유망 종목이 없습니다."
             
         context = "[System Recommendation Data from DB]\n"
         for item in top_stocks:
-            # 상세 분석 리포트 내용이 있다면 포함, 없으면 기본 정보
             report = item.get('report', '상세 분석 데이터 없음')
             code = item.get('code')
             score = item.get('total_score', 0)
@@ -39,6 +34,40 @@ def _get_recommendation_context(limit=3):
         return context
     except Exception as e:
         return f" [System Error] 추천 데이터 조회 실패: {e}"
+
+def _extract_alert_params(user_input):
+    """
+    [신규] 사용자의 자연어 명령에서 알림 설정에 필요한 정보(티커, 가격, 조건)를 추출
+    """
+    try:
+        # 추출 전용 프롬프트
+        prompt = f"""
+        Extract stock alert parameters from the text below.
+        Return ONLY a JSON object with keys: "ticker" (US symbol, e.g., TSLA), "price" (number), "condition" ("GE" for >=, "LE" for <=).
+        If the user implies "rising to" or "breaking", use "GE". If "dropping to", use "LE".
+        If no specific price is mentioned, return null.
+        
+        Text: "{user_input}"
+        JSON:
+        """
+        response = client.models.generate_content(
+            model='gemini-2.0-flash', 
+            contents=prompt
+        )
+        # JSON 파싱
+        text = response.text.strip()
+        # 마크다운 코드블록 제거
+        if "```" in text:
+            text = text.replace("```json", "").replace("```", "")
+        
+        data = json.loads(text)
+        
+        # 필수 값 체크
+        if data and data.get('ticker') and data.get('price'):
+            return data
+        return None
+    except:
+        return None
 
 def start_consulting(initial_context=""):
     print("\n" + "="*40)
@@ -57,7 +86,7 @@ def start_consulting(initial_context=""):
     1. 이모티콘을 절대 사용하지 마십시오.
     2. 말투: {USER_NAME}에게 똑똑하고 주관 뚜렷한 친구처럼 '반말'로 직설적으로 조언하라.
     3. [Context]에 없는 내용은 절대 지어내지 마십시오. 모르면 "데이터가 없습니다"라고 하십시오.
-    4. "가상 종목 A" 같은 예시는 절대 들지 마십시오. 무조건 실존하는 티커(Ticker)만 언급하십시오.
+    4. 사용자가 "알림"이나 "감시"를 요청하면, 시스템이 이미 설정을 완료했음을 인지하고 확인해 주십시오.
     
     [User Profile]
     {profile_str}
@@ -66,7 +95,7 @@ def start_consulting(initial_context=""):
     {initial_context}
     """
     
-    history = [] # 대화 기록 (Turn 관리)
+    history = [] 
 
     while True:
         try:
@@ -77,49 +106,65 @@ def start_consulting(initial_context=""):
         if not user_input: continue
         if user_input.lower() in ['q', 'exit', 'quit']: return "EXIT"
         
-        # 3. 사용자 의도 파악 (Intent Detection)
-        
-        # (A) 종목 분석 요청 감지 (티커 추출)
-        # 영어 대문자 2~5글자 추출
-        potential_tickers = re.findall(r'\b[A-Z]{2,5}\b', user_input.upper())
-        # DB에 있는 티커인지 확인하거나, 명시적으로 "분석" 요청이 있는 경우
-        found_tickers = []
-        
+        # 3. 사용자 의도 파악 및 데이터 인출 (RAG & Tool Use)
+        injected_context = ""
+
+        # (A) 알림/감시 요청 감지 [신규 기능]
+        alert_keywords = ["알림", "알려줘", "감시", "오르면", "내리면", "도달하면"]
+        if any(k in user_input for k in alert_keywords):
+            print(" [Mervis] 알림 설정 요청 분석 중...", end="")
+            params = _extract_alert_params(user_input)
+            
+            if params:
+                # 웹소켓 모듈에 감시 조건 등록
+                ticker = params['ticker'].upper()
+                price = params['price']
+                cond = params['condition']
+                
+                # 실제 등록 함수 호출
+                kis_websocket.add_watch_condition(ticker, price, cond)
+                
+                injected_context += f"\n[System Action] 사용자가 요청한 {ticker} ${price} ({cond}) 알림 설정을 완료했습니다. 사용자에게 설정됐다고 말해주십시오.\n"
+                print(" 설정 완료.")
+            else:
+                print(" 실패 (조건 불명확).")
+
         # (B) 추천 요청 감지
         recommend_keywords = ["추천", "종목 좀", "살만한거", "뭐 살까", "유망", "급등"]
         is_recommendation = any(k in user_input for k in recommend_keywords)
-
-        # 4. 데이터 인출 (RAG)
-        injected_context = ""
-
-        # 4-1. 추천 요청인 경우 -> DB 랭킹 조회
+        
         if is_recommendation:
             print(" [Mervis] DB 내 유망 종목 검색 중...", end="")
             rec_data = _get_recommendation_context(limit=3)
             injected_context += f"\n{rec_data}\n"
             print(" 완료.")
 
-        # 4-2. 특정 종목 언급인 경우 -> Brain 분석 실행
+        # (C) 종목 분석 요청 감지
+        # 1. 영어 티커 추출
+        potential_tickers = re.findall(r'\b[A-Z]{2,5}\b', user_input.upper())
+        # 2. (옵션) 한글 종목명 매핑 로직이 필요하다면 여기에 추가
+        
         if potential_tickers:
             print(f" [Mervis] 데이터 분석: {potential_tickers}")
             for t in potential_tickers:
-                # 뇌 가동 (실시간 API 조회 + DB 저장)
                 res = mervis_brain.analyze_stock({'code': t, 'name': t, 'price': 0})
                 if res:
                     injected_context += f"\n[Analysis Data for {t}]\n{res['report']}\n"
         
-        # 5. 프롬프트 조립
+        # 4. 프롬프트 조립
         full_prompt = f"{system_instruction}\n"
         
-        # 이전 대화 요약 (최근 2턴만 유지하여 토큰 절약)
+        # 이전 대화 요약 (토큰 절약)
         for h in history[-4:]: 
             full_prompt += f"{h}\n"
             
-        full_prompt += f"\n[Injecting Real-time Data]\n{injected_context}\n"
+        if injected_context:
+            full_prompt += f"\n[Injecting Real-time Data & Actions]\n{injected_context}\n"
+        
         full_prompt += f"User: {user_input}\nMervis:"
         
         try:
-            # 6. Gemini 응답 생성
+            # 5. Gemini 응답 생성
             response = client.models.generate_content(
                 model='gemini-2.0-flash', 
                 contents=full_prompt
@@ -132,7 +177,6 @@ def start_consulting(initial_context=""):
             history.append(f"User: {user_input}")
             history.append(f"Mervis: {answer}")
             
-            # 사용자 성향 자동 업데이트 (백그라운드)
             if len(user_input) > 10:
                 mervis_profile.update_user_profile(user_input)
                 
