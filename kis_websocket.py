@@ -5,14 +5,44 @@ import threading
 import logging
 import kis_auth
 import mervis_state
+import notification
 
 # [설정] 미국 주식 실시간 체결가 TR ID
 TR_ID_REAL = "HDFSCNT0" 
 WS_URL_REAL = "ws://ops.koreainvestment.com:21000"
-WS_URL_MOCK = "ws://openapivts.koreainvestment.com:21000"
+WS_URL_MOCK = "ws://ops.koreainvestment.com:21000"
 
 # 글로벌 감시자 인스턴스
 _active_watcher = None
+
+# [신규] 사용자가 지정한 알림 타겟 관리 (메모리 저장)
+# 구조: { "TSLA": {"target_price": 300.0, "condition": "GE"} }  # GE: Greater or Equal
+_user_watch_list = {}
+
+def add_watch_condition(ticker, target_price, condition="GE"):
+    """
+    사용자가 대화 중에 요청한 감시 조건을 등록하는 함수
+    ticker: 종목코드
+    target_price: 목표가
+    condition: 'GE'(이상), 'LE'(이하)
+    """
+    global _user_watch_list
+    ticker = ticker.upper()
+    _user_watch_list[ticker] = {
+        "target_price": float(target_price),
+        "condition": condition
+    }
+    logging.info(f"[Watch List] Added {ticker} (Target: {target_price}, Cond: {condition})")
+    return True
+
+def remove_watch_condition(ticker):
+    global _user_watch_list
+    ticker = ticker.upper()
+    if ticker in _user_watch_list:
+        del _user_watch_list[ticker]
+        logging.info(f"[Watch List] Removed {ticker}")
+        return True
+    return False
 
 class MervisWatcher:
     def __init__(self, target_list):
@@ -22,36 +52,46 @@ class MervisWatcher:
         self.is_running = False
         
         self.mode = mervis_state.get_mode()
-        self.base_url = WS_URL_REAL if self.mode == "REAL" else WS_URL_MOCK
+        self.base_url = WS_URL_REAL 
         
-        # 이전 가격 저장용
-        self.prev_prices = {} 
-
-    def check_signal(self, ticker, price, change_rate):
+    def check_user_alert(self, ticker, current_price, change_rate):
         """
-        [Alert System] 급등락 감지 (로그 파일에만 기록)
+        [User Custom Alert]
+        사용자가 '직접 부탁한' 조건에 도달했는지 확인하고 알림 전송
         """
-        try:
-            c_rate = float(change_rate)
-            
-            # [안전장치] 데이터 오류로 날짜(20260102 등)가 퍼센트로 들어오면 무시
-            if abs(c_rate) > 500: 
-                return
+        global _user_watch_list
+        
+        # 1. 사용자가 등록한 종목인지 확인
+        if ticker not in _user_watch_list:
+            return
 
-            # [Trigger 1] 급등 알림 (5% 이상)
-            if c_rate >= 5.0:
-                logging.warning(f"[ALERT] {ticker} Surge detected: ${price} (+{c_rate}%)")
+        watch_info = _user_watch_list[ticker]
+        target = watch_info['target_price']
+        cond = watch_info['condition']
+        
+        is_triggered = False
+        msg = ""
+
+        # 2. 조건 비교
+        if cond == "GE" and current_price >= target: # 목표가 이상 도달 (익절/돌파)
+            is_triggered = True
+            msg = f"[목표 도달] {ticker} 목표가 ${target} 돌파! (현재 ${current_price})"
+        
+        elif cond == "LE" and current_price <= target: # 목표가 이하 도달 (손절/저점매수)
+            is_triggered = True
+            msg = f"[가격 도달] {ticker} 지정가 ${target} 도달! (현재 ${current_price})"
+
+        # 3. 알림 전송 및 목록에서 제거(일회성 알림인 경우)
+        if is_triggered:
+            logging.info(f"[ALERT TRIGGERED] {msg}")
+            notification.send_alert("매매 신호 감지", msg, color="blue")
             
-            # [Trigger 2] 급락 알림 (-5% 이하)
-            elif c_rate <= -5.0:
-                logging.warning(f"[ALERT] {ticker} Plunge detected: ${price} ({c_rate}%)")
-                 
-        except: 
-            pass
+            # 알림 후 목록에서 삭제 (중복 알림 방지, 필요시 유지 가능)
+            del _user_watch_list[ticker] 
 
     def on_message(self, ws, message):
         try:
-            # 1. 핑퐁 처리 (연결 유지)
+            # 1. 핑퐁 처리
             if message[0] == '{':
                 data = json.loads(message)
                 if 'header' in data and data['header'].get('tr_id') == 'PINGPONG':
@@ -64,27 +104,22 @@ class MervisWatcher:
                 tr_id = parts[1]
                 
                 if tr_id == TR_ID_REAL:
-                    # 데이터 본문 분리
                     raw_data = parts[3].split('^')
                     
-                    # [데이터 매핑 수정]
-                    # Index 0: RSYM (종목코드)
-                    # Index 2: PRIC (현재가)
-                    # Index 5: RATE (등락률) *기존 4번(DIFF)에서 5번으로 수정
-                    
-                    if len(raw_data) > 10:
-                        ticker = raw_data[0]
-                        price = float(raw_data[2])
-                        change_rate = float(raw_data[5]) # 여기가 날짜가 아니라 진짜 수익률
+                    if len(raw_data) > 15:
+                        raw_ticker = raw_data[0]
+                        ticker = raw_ticker[4:] if len(raw_ticker) > 4 else raw_ticker
                         
-                        # [Log] 파일에만 기록 (콘솔 출력 X)
+                        price = float(raw_data[11]) # 현재가
+                        change_rate = float(raw_data[14]) # 등락률
+                        
+                        # [Log] 기본 로그는 파일에 계속 남김 (데이터 수집용)
                         logging.info(f"[Live] {ticker}: ${price} ({change_rate}%)")
                         
-                        # [Signal] 알림 체크
-                        self.check_signal(ticker, price, change_rate)
+                        # [Alert] 사용자가 부탁한 조건만 체크 (무조건적인 급등락 알림 삭제됨)
+                        self.check_user_alert(ticker, price, change_rate)
                     
         except Exception as e:
-            # 파싱 에러 등은 디버그 로그로 처리
             logging.debug(f"Parsing Error: {e}")
 
     def on_error(self, ws, error):
@@ -95,31 +130,23 @@ class MervisWatcher:
         self.is_running = False
 
     def on_open(self, ws):
-        logging.info("[Watcher] Connected! Background monitoring started.")
+        logging.info("[Watcher] Connected! Monitoring started.")
         self.is_running = True
         
-        # 구독 신청
+        # 기본 감시 대상 구독 (Top 40 등)
         for item in self.target_list:
             ticker = item['code']
-            # 실시간 체결가 Key 형식: DNAS + Ticker
             tr_key = f"DNAS{ticker}" 
             
             req_body = {
                 "header": {
                     "approval_key": self.ws_key,
-                    "custtype": "P",
-                    "tr_type": "1",
-                    "content-type": "utf-8"
+                    "custtype": "P", "tr_type": "1", "content-type": "utf-8"
                 },
-                "body": {
-                    "input": {
-                        "tr_id": TR_ID_REAL,
-                        "tr_key": tr_key
-                    }
-                }
+                "body": { "input": { "tr_id": TR_ID_REAL, "tr_key": tr_key } }
             }
             ws.send(json.dumps(req_body))
-            time.sleep(0.05) # 요청 간격 조절
+            time.sleep(0.05) 
 
     def start_loop(self):
         self.ws_key = kis_auth.get_websocket_key()
@@ -127,13 +154,12 @@ class MervisWatcher:
             logging.error("[Watcher] Failed to get WebSocket Key.")
             return
 
-        # 웹소켓 실행
+        ws_url = f"{self.base_url}"
+        
         self.ws = websocket.WebSocketApp(
-            f"{self.base_url}/tryitout/{TR_ID_REAL}",
-            on_open=self.on_open,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close
+            ws_url,
+            on_open=self.on_open, on_message=self.on_message,
+            on_error=self.on_error, on_close=self.on_close
         )
         self.ws.run_forever()
 
@@ -155,8 +181,6 @@ def start_background_monitoring(target_list):
         return
 
     _active_watcher = MervisWatcher(target_list)
-    
-    # 스레드 실행 (데몬 스레드: 메인 종료 시 자동 종료)
     t = threading.Thread(target=_active_watcher.start_loop)
     t.daemon = True 
     t.start()
