@@ -6,7 +6,7 @@ from datetime import datetime
 from deep_translator import GoogleTranslator
 import mervis_state
 
-# [설정] BigQuery 상수
+# BigQuery 상수
 KEY_PATH = "service_account.json"
 DATASET_ID = "mervis_db"
 TABLE_HISTORY = "trade_history"
@@ -363,23 +363,34 @@ def update_trade_result(ticker, log_date, result_status):
 
 def update_trade_feedback(ticker, log_date, feedback):
     """
-    [NEW] 오답노트(피드백) 저장
+    오답노트(피드백) 저장 - 타입 불일치 오류(DATETIME vs TIMESTAMP) 해결 버전
     """
     client = get_client()
     if not client: return
+    
+    # 날짜를 문자열로 변환 ('yyyy-mm-dd 10:00:00%')
     date_str = log_date.strftime('%Y-%m-%d %H:%M:%S')
     
-    # 쿼리 내 따옴표 이스케이프 처리
-    safe_feedback = feedback.replace("'", "\\'").replace('"', '\\"')
-    
+    # DB의 log_date가 DATETIME이든 TIMESTAMP든 상관없이, 
+    # 둘 다 STRING으로 변환해서 비교.
     query = f"""
         UPDATE `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
-        SET feedback = '{safe_feedback}'
-        WHERE ticker = '{ticker}' 
-          AND log_date = '{date_str}'
+        SET feedback = @feedback
+        WHERE ticker = @ticker 
+          AND CAST(log_date AS STRING) LIKE @date_pattern
     """
+    
+    # 'yyyy-mm-dd 10:00:00%' 형태로 검색하여 미세한 시간 차이(마이크로초) 무시
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("feedback", "STRING", feedback),
+            bigquery.ScalarQueryParameter("ticker", "STRING", ticker),
+            bigquery.ScalarQueryParameter("date_pattern", "STRING", f"{date_str}%")
+        ]
+    )
+    
     try:
-        query_job = client.query(query)
+        query_job = client.query(query, job_config=job_config)
         query_job.result()
     except Exception as e:
         print(f" [BQ Feedback Error] {ticker} 피드백 저장 실패: {e}")

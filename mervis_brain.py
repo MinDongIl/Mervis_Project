@@ -12,7 +12,7 @@ import mervis_profile
 import mervis_state 
 import mervis_news 
 import mervis_bigquery 
-import mervis_painter # [화가 모듈 import]
+import mervis_painter
 
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
 USER_NAME = getattr(secret, 'USER_NAME', '사용자')
@@ -196,7 +196,7 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memories, news_dat
         gap_summary = "First Analysis."
         reflection_ctx = "[No past memories.]"
 
-    # [신규] 과거 교훈(오답노트) 컨텍스트 생성
+    # 과거 교훈(오답노트) 컨텍스트 생성
     lessons_ctx = ""
     if feedback_list:
         lessons_ctx = "[YOUR PAST MISTAKES & LESSONS - DO NOT REPEAT!]\n"
@@ -275,7 +275,7 @@ def analyze_stock(item):
         p_val = latest_daily.get('clos') or latest_daily.get('last')
         if p_val: price = float(p_val)
 
-    # [수정] 3개 반환값 언패킹
+    # 3개 반환값 언패킹
     tech_data, tech_err, key_factors = calculate_technical_indicators(d_data)
     
     if not tech_data: print(f" [Brain] Tech Calculation Warning: {tech_err}")
@@ -290,12 +290,12 @@ def analyze_stock(item):
     is_open = kis_scan.is_market_open_check()
     past_memories = load_memories(ticker)
     
-    # [수정] 오답노트 조회
+    # 오답노트 조회
     feedback_list = []
     if hasattr(mervis_bigquery, 'get_past_lessons'):
         feedback_list = mervis_bigquery.get_past_lessons(ticker)
     
-    # [수정] 화가 호출 (key_factors 전달)
+    # 화가 호출 (key_factors 전달)
     chart_path = mervis_painter.draw_chart(ticker, d_data, highlight_indicators=key_factors)
     if chart_path:
         print(f" [Painter] 핵심 근거({key_factors}) 기반 차트 생성: {chart_path}")

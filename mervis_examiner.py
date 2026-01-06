@@ -4,9 +4,36 @@ import datetime
 import mervis_state
 from google import genai
 import secret
+import os
 
 # Gemini 클라이언트 설정 (반성문 작성용)
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
+
+# 1일 1회 실행 제한을 위한 타임스탬프 파일 설정
+TIMESTAMP_FILE = ".examiner_last_run"
+
+def check_if_already_run():
+    """오늘 이미 채점을 수행했는지 확인"""
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    
+    if os.path.exists(TIMESTAMP_FILE):
+        try:
+            with open(TIMESTAMP_FILE, "r") as f:
+                last_run = f.read().strip()
+            if last_run == today_str:
+                return True # 이미 실행함
+        except:
+            return False
+            
+    return False
+
+def mark_as_run():
+    """오늘 실행했다고 기록"""
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    try:
+        with open(TIMESTAMP_FILE, "w") as f:
+            f.write(today_str)
+    except: pass
 
 def generate_feedback(item):
     """
@@ -50,6 +77,12 @@ def run_examination():
     Phase 1: 채점 (WIN/LOSE 판정)
     Phase 2: 피드백 (오답노트 작성)
     """
+    
+    # 오늘 이미 실행했는지 체크
+    if check_if_already_run():
+        print(" [Examiner] 오늘의 자기 복기(채점)가 이미 완료되었습니다. (Skip)")
+        return
+
     print("\n" + "="*60)
     print(" [Examiner] 자기 복기 시스템 (채점 및 심층 분석)")
     print("="*60)
@@ -163,10 +196,12 @@ def run_examination():
             feedback = generate_feedback(item)
             if feedback:
                 mervis_bigquery.update_trade_feedback(item['ticker'], item['date'], feedback)
-                print(f" 완료.\n     교훈: {feedback}")
+                print(f" 완료.\n    교훈: {feedback}")
             else:
                 print(" 실패.")
-            
+    
+    # 실행 완료 기록
+    mark_as_run()
     print("=" * 60 + "\n")
 
 if __name__ == "__main__":
