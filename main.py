@@ -4,7 +4,7 @@ import datetime
 import logging
 import threading
 import holidays
-import pytz  # [추가] 서머타임 자동 계산을 위한 라이브러리
+import pytz 
 from logging.handlers import RotatingFileHandler
 
 # 사용자 모듈
@@ -18,6 +18,7 @@ import update_volume_tier
 import kis_websocket
 import kis_account
 import notification
+import mervis_examiner # [추가] 자기 복기(채점) 모듈 import
 
 # [설정] 전역 변수
 is_scheduled = False
@@ -41,12 +42,9 @@ def check_market_open_time():
     뉴욕 현지 시간을 기준으로 장 시작 여부를 판단 (서머타임 자동 적용)
     Return: (status_code, message, seconds_to_wait)
     """
-    # 1. 타임존 설정
     tz_ny = pytz.timezone('America/New_York')
-    now_ny = datetime.datetime.now(tz_ny) # 현재 뉴욕 시간
+    now_ny = datetime.datetime.now(tz_ny) 
     
-    # 2. 휴장/주말 체크
-    # holidays 라이브러리는 날짜 객체(date)를 요구함
     date_ny = now_ny.date()
     us_holidays = holidays.US()
     
@@ -54,38 +52,22 @@ def check_market_open_time():
     if date_str in us_holidays:
         return 2, f"휴장일({us_holidays[date_str]})", 0
     
-    # weekday(): 0(월) ~ 6(일) -> 뉴욕 기준 토(5), 일(6) 체크
     if now_ny.weekday() >= 5:
         return 2, "주말", 0
 
-    # 3. 개장 시간 설정 (뉴욕 기준 09:30)
     market_open = now_ny.replace(hour=9, minute=30, second=0, microsecond=0)
     
-    # 4. 시간 비교
-    # 현재 뉴욕 시간이 06:00 이전(새벽)이라면 -> 장 마감 후 or 장전 (여기선 장전으로 처리)
-    # 현재 뉴욕 시간이 16:00 이후라면 -> 장 마감
-    
-    # [단순화 로직]
-    # 현재가 09:30 이전이면 -> 대기
-    # 현재가 09:30 ~ 16:00 사이면 -> 장 운영 중
-    # (새벽 4시 등 프리마켓 시간대도 일단은 '대기'로 퉁치고 09:30에 정식 가동)
-
     if now_ny < market_open:
         wait_sec = (market_open - now_ny).total_seconds()
         return 1, "개장 전 대기", wait_sec
         
-    # 만약 현재 시간이 09:30은 지났는데, 16:00(장마감)은 안 지났다면
     market_close = now_ny.replace(hour=16, minute=0, second=0, microsecond=0)
     if now_ny < market_close:
         return 0, "장 운영 중", 0
         
-    # 16:00 이후라면 (장 마감)
     return 2, "장 마감", 0
 
 def scheduled_market_watcher(targets):
-    """
-    백그라운드 예약 대기 (서머타임 고려됨)
-    """
     global is_scheduled
     is_scheduled = True
     
@@ -99,7 +81,6 @@ def scheduled_market_watcher(targets):
         if not is_scheduled:
             logging.info("Scheduled monitoring cancelled by user.")
             return
-        # 10초 단위 체크
         sleep_time = min(10, wait_sec)
         time.sleep(sleep_time)
         wait_sec -= sleep_time
@@ -140,6 +121,12 @@ def run_system():
     global is_scheduled, scheduled_thread
     
     system_init()
+    
+    # [추가] 부팅 시 지난밤 매매 복기(채점) 수행
+    try:
+        mervis_examiner.run_examination()
+    except Exception as e:
+        print(f" [System Error] 복기 시스템 실행 중 오류: {e}")
 
     print(" [모드 선택]")
     print(" 1. 실전 투자 (REAL)")
@@ -255,20 +242,20 @@ def run_system():
 
                 status, msg, wait_sec = check_market_open_time()
                 
-                if status == 2: # 휴장/주말/마감
+                if status == 2: 
                     print(f" [경고] {msg}입니다.")
                     c = input(" >> 그래도 강제로 켜시겠습니까? (y/n): ")
                     if c.lower() == 'y':
                         kis_websocket.start_background_monitoring(targets)
                         print(" [알림] 강제 실행되었습니다.")
                 
-                elif status == 1: # 장전 대기
+                elif status == 1: 
                     print(f" [알림] 현재 장 시작 전입니다. ({int(wait_sec//60)}분 남음)")
                     print(" [Process] 뉴욕 시간 09:30(개장)에 맞춰 예약을 설정합니다.")
                     scheduled_thread = threading.Thread(target=scheduled_market_watcher, args=(targets,), daemon=True)
                     scheduled_thread.start()
                     
-                else: # 장중 (즉시 실행)
+                else: 
                     print(" [Process] 장 운영 시간입니다. 즉시 감시를 시작합니다.")
                     kis_websocket.start_background_monitoring(targets)
                     notification.send_alert("감시 시작", f"실시간 감시를 시작합니다. 대상: {len(targets)}개")

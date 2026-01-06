@@ -92,13 +92,12 @@ def get_tickers_from_db(limit=40, tags=[]):
 
 def ensure_history_table_schema(client):
     """
-    [Schema Update] trade_history 테이블에 예측 데이터 컬럼이 없으면 추가
+    trade_history 테이블에 예측 데이터 컬럼이 없으면 추가
     """
     table_id = f"{client.project}.{DATASET_ID}.{TABLE_HISTORY}"
     try:
         table = client.get_table(table_id)
         
-        # 필요한 새 컬럼 정의
         new_columns = [
             bigquery.SchemaField("action", "STRING", mode="NULLABLE"),       # BUY/SELL/HOLD
             bigquery.SchemaField("target_price", "FLOAT", mode="NULLABLE"),  # 목표가
@@ -118,25 +117,20 @@ def ensure_history_table_schema(client):
             new_schema = original_schema[:] + added_fields
             table.schema = new_schema
             client.update_table(table, ["schema"])
-            print(f" [DB] 'trade_history' 테이블 스키마 업데이트 완료 ({len(added_fields)}개 컬럼 추가)")
+            # print(f" [DB] 테이블 스키마 업데이트 완료 ({len(added_fields)}개 컬럼 추가)")
             
     except Exception as e:
-        # 테이블이 아예 없으면 생성 시점에 처리되므로 패스
         pass
 
 def save_log(ticker, mode, price, report, news_summary="", action="WAITING", target_price=0.0, cut_price=0.0):
-    """
-    [Updated] 분석 리포트 및 예측 데이터(목표가, 손절가) 저장
-    """
     client = get_client()
     if not client: return
     
-    # 스키마 확인 및 업데이트 (최초 1회성 비용 발생하지만 안전함)
+    # 스키마 확인 및 업데이트
     ensure_history_table_schema(client)
     
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_HISTORY}"
     
-    # 테이블 생성 (없을 경우)
     schema = [
         bigquery.SchemaField("log_date", "TIMESTAMP", mode="REQUIRED"),
         bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
@@ -145,7 +139,6 @@ def save_log(ticker, mode, price, report, news_summary="", action="WAITING", tar
         bigquery.SchemaField("report", "STRING", mode="NULLABLE"),
         bigquery.SchemaField("news_summary", "STRING", mode="NULLABLE"),
         bigquery.SchemaField("strategy_result", "STRING", mode="NULLABLE"),
-        # [NEW]
         bigquery.SchemaField("action", "STRING", mode="NULLABLE"),
         bigquery.SchemaField("target_price", "FLOAT", mode="NULLABLE"),
         bigquery.SchemaField("cut_price", "FLOAT", mode="NULLABLE"),
@@ -161,11 +154,11 @@ def save_log(ticker, mode, price, report, news_summary="", action="WAITING", tar
         "price": price,
         "report": report, 
         "news_summary": news_summary, 
-        "strategy_result": "WAITING", # (구) 호환성
+        "strategy_result": "WAITING",
         "action": action,
         "target_price": target_price,
         "cut_price": cut_price,
-        "result_status": "PENDING" # 아직 결과 모름
+        "result_status": "PENDING"
     }]
     
     try: client.insert_rows_json(table_ref, rows)
@@ -316,3 +309,54 @@ def get_top_ranked_stocks(limit=5):
                 })
         except: pass
     return results
+
+# --- [채점 시스템용 함수] ---
+
+def get_pending_trades():
+    client = get_client()
+    if not client: return []
+    
+    # [수정] action 필터 확장 (BUY/SELL/HOLD/WAIT)
+    # HOLD의 경우 target_price가 없을 수 있으므로 NULL 체크 제거
+    query = f"""
+        SELECT ticker, mode, price, action, target_price, cut_price, log_date
+        FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
+        WHERE result_status = 'PENDING' 
+          AND action IN ('BUY', 'SELL', 'HOLD', 'WAIT')
+        ORDER BY log_date ASC
+    """
+    try:
+        results = list(client.query(query).result())
+        pending_list = []
+        for row in results:
+            pending_list.append({
+                "ticker": row.ticker,
+                "mode": row.mode,
+                "entry_price": row.price,
+                "action": row.action,
+                "target": row.target_price if row.target_price is not None else 0.0,
+                "cut": row.cut_price if row.cut_price is not None else 0.0,
+                "date": row.log_date
+            })
+        return pending_list
+    except Exception as e:
+        print(f" [BQ Error] 대기중인 매매 조회 실패: {e}")
+        return []
+
+def update_trade_result(ticker, log_date, result_status):
+    client = get_client()
+    if not client: return
+    
+    date_str = log_date.strftime('%Y-%m-%d %H:%M:%S')
+    
+    query = f"""
+        UPDATE `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
+        SET result_status = '{result_status}'
+        WHERE ticker = '{ticker}' 
+          AND log_date = '{date_str}'
+    """
+    try:
+        query_job = client.query(query)
+        query_job.result()
+    except Exception as e:
+        print(f" [BQ Update Error] {ticker} 업데이트 실패: {e}")
