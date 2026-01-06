@@ -92,17 +92,18 @@ def get_tickers_from_db(limit=40, tags=[]):
 
 def ensure_history_table_schema(client):
     """
-    trade_history 테이블에 예측 데이터 컬럼이 없으면 추가
+    trade_history 테이블에 예측 데이터 및 피드백 컬럼이 없으면 추가
     """
     table_id = f"{client.project}.{DATASET_ID}.{TABLE_HISTORY}"
     try:
         table = client.get_table(table_id)
         
         new_columns = [
-            bigquery.SchemaField("action", "STRING", mode="NULLABLE"),       # BUY/SELL/HOLD
-            bigquery.SchemaField("target_price", "FLOAT", mode="NULLABLE"),  # 목표가
-            bigquery.SchemaField("cut_price", "FLOAT", mode="NULLABLE"),     # 손절가
-            bigquery.SchemaField("result_status", "STRING", mode="NULLABLE") # PENDING/WIN/LOSE
+            bigquery.SchemaField("action", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("target_price", "FLOAT", mode="NULLABLE"),
+            bigquery.SchemaField("cut_price", "FLOAT", mode="NULLABLE"),
+            bigquery.SchemaField("result_status", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("feedback", "STRING", mode="NULLABLE")
         ]
         
         existing_fields = {f.name for f in table.schema}
@@ -117,7 +118,6 @@ def ensure_history_table_schema(client):
             new_schema = original_schema[:] + added_fields
             table.schema = new_schema
             client.update_table(table, ["schema"])
-            # print(f" [DB] 테이블 스키마 업데이트 완료 ({len(added_fields)}개 컬럼 추가)")
             
     except Exception as e:
         pass
@@ -142,7 +142,8 @@ def save_log(ticker, mode, price, report, news_summary="", action="WAITING", tar
         bigquery.SchemaField("action", "STRING", mode="NULLABLE"),
         bigquery.SchemaField("target_price", "FLOAT", mode="NULLABLE"),
         bigquery.SchemaField("cut_price", "FLOAT", mode="NULLABLE"),
-        bigquery.SchemaField("result_status", "STRING", mode="NULLABLE") 
+        bigquery.SchemaField("result_status", "STRING", mode="NULLABLE"),
+        bigquery.SchemaField("feedback", "STRING", mode="NULLABLE")
     ]
     try: client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
     except: pass
@@ -158,7 +159,8 @@ def save_log(ticker, mode, price, report, news_summary="", action="WAITING", tar
         "action": action,
         "target_price": target_price,
         "cut_price": cut_price,
-        "result_status": "PENDING"
+        "result_status": "PENDING",
+        "feedback": None
     }]
     
     try: client.insert_rows_json(table_ref, rows)
@@ -316,8 +318,6 @@ def get_pending_trades():
     client = get_client()
     if not client: return []
     
-    # [수정] action 필터 확장 (BUY/SELL/HOLD/WAIT)
-    # HOLD의 경우 target_price가 없을 수 있으므로 NULL 체크 제거
     query = f"""
         SELECT ticker, mode, price, action, target_price, cut_price, log_date
         FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
@@ -360,3 +360,77 @@ def update_trade_result(ticker, log_date, result_status):
         query_job.result()
     except Exception as e:
         print(f" [BQ Update Error] {ticker} 업데이트 실패: {e}")
+
+def update_trade_feedback(ticker, log_date, feedback):
+    """
+    [NEW] 오답노트(피드백) 저장
+    """
+    client = get_client()
+    if not client: return
+    date_str = log_date.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # 쿼리 내 따옴표 이스케이프 처리
+    safe_feedback = feedback.replace("'", "\\'").replace('"', '\\"')
+    
+    query = f"""
+        UPDATE `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
+        SET feedback = '{safe_feedback}'
+        WHERE ticker = '{ticker}' 
+          AND log_date = '{date_str}'
+    """
+    try:
+        query_job = client.query(query)
+        query_job.result()
+    except Exception as e:
+        print(f" [BQ Feedback Error] {ticker} 피드백 저장 실패: {e}")
+
+def get_trades_needing_feedback():
+    """
+    [NEW] 결과는 나왔으나 피드백이 없는 항목 조회
+    """
+    client = get_client()
+    if not client: return []
+    
+    query = f"""
+        SELECT ticker, mode, price, action, report, result_status, log_date
+        FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
+        WHERE result_status IN ('WIN', 'LOSE')
+          AND feedback IS NULL
+        ORDER BY log_date DESC
+        LIMIT 5
+    """
+    try:
+        results = list(client.query(query).result())
+        return [{
+            "ticker": row.ticker,
+            "mode": row.mode,
+            "entry_price": row.price,
+            "action": row.action,
+            "report": row.report,
+            "result": row.result_status,
+            "date": row.log_date
+        } for row in results]
+    except: return []
+
+def get_past_lessons(ticker, limit=5):
+    """
+    [RAG] 해당 종목의 과거 오답노트(피드백) 조회
+    """
+    client = get_client()
+    if not client: return []
+    
+    query = f"""
+        SELECT log_date, result_status, feedback
+        FROM `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
+        WHERE ticker = '{ticker}' 
+          AND feedback IS NOT NULL
+        ORDER BY log_date DESC LIMIT {limit}
+    """
+    try:
+        results = list(client.query(query).result())
+        return [{
+            "date": str(row.log_date)[:10], 
+            "result": row.result_status, 
+            "feedback": row.feedback
+        } for row in results]
+    except: return []

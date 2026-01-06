@@ -16,7 +16,7 @@ import mervis_bigquery
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
 USER_NAME = getattr(secret, 'USER_NAME', '사용자')
 
-# 기술적 지표 계산 함수 (기존 동일)
+# 기술적 지표 계산 함수
 def calculate_technical_indicators(daily_data):
     try:
         if not daily_data: return None, "데이터 부족"
@@ -83,32 +83,25 @@ def load_memories(ticker):
     memories = mervis_bigquery.get_multi_memories(ticker, limit=3)
     return memories if memories else []
 
-# [수정] 정규표현식으로 리포트에서 숫자 추출
 def extract_strategy_values(report_text):
     """
     Gemini 리포트에서 전략, 목표가, 손절가 추출
-    Format: "목표가: $150.0" -> 150.0
     """
     try:
         data = {
-            "action": "HOLD", # 기본값
+            "action": "HOLD",
             "target_price": 0.0,
             "cut_price": 0.0
         }
-        
-        # 1. 전략 추출 (매수/매도/관망)
         if "매수추천" in report_text or "매수 권고" in report_text:
             data["action"] = "BUY"
         elif "매도권고" in report_text:
             data["action"] = "SELL"
         
-        # 2. 목표가 추출 (예: 목표가: 150.5, 목표가: $150)
-        # 정규식: "목표가" 뒤에 오는 숫자(소수점 포함) 추출
         target_match = re.search(r"목표가[:\s\$]+([\d\.]+)", report_text)
         if target_match:
             data["target_price"] = float(target_match.group(1))
             
-        # 3. 손절가 추출
         cut_match = re.search(r"손절가[:\s\$]+([\d\.]+)", report_text)
         if cut_match:
             data["cut_price"] = float(cut_match.group(1))
@@ -121,17 +114,14 @@ def save_memory(ticker, price, report, news_data):
     if "전략:" not in report: return
     mode = mervis_state.get_mode()
     
-    # [추가] 리포트에서 전략 수치 추출
     strategy_data = extract_strategy_values(report)
     
-    # [수정] current_price -> price 로 변경
     mervis_bigquery.save_log(
         ticker=ticker, 
         mode=mode, 
         price=price,
         report=report, 
         news_summary=news_data,
-        # [신규 인자] 예측 데이터
         action=strategy_data['action'],
         target_price=strategy_data['target_price'],
         cut_price=strategy_data['cut_price']
@@ -164,7 +154,8 @@ def get_gap_analysis(ticker, last_date):
         summary += f"- {d['xymd']}: ${d['clos']} ({d['rate']}%)\n"
     return summary
 
-def get_strategy_report(ticker, chart_data_set, is_open, past_memories, news_data, tech_data):
+# [수정] feedback_list 인자 추가
+def get_strategy_report(ticker, chart_data_set, is_open, past_memories, news_data, tech_data, feedback_list):
     daily_txt = summarize_data(chart_data_set['daily'], "Daily", 15)
     weekly_txt = summarize_data(chart_data_set['weekly'], "Weekly", 8)
     current_price = chart_data_set['current_price']
@@ -177,12 +168,21 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memories, news_dat
     if past_memories:
         last_log_date = past_memories[0]['date']
         gap_summary = get_gap_analysis(ticker, last_log_date)
-        reflection_ctx = "[Self-Correction: Past Performance]\n"
+        reflection_ctx = "[Analysis History]\n"
         for i, m in enumerate(past_memories):
             reflection_ctx += f"{i+1}. {m['date']} Price:${m['price']} -> Report: {m['report'][:150]}...\n"
     else:
         gap_summary = "First Analysis."
         reflection_ctx = "[No past memories.]"
+
+    # [신규] 과거 교훈(오답노트) 컨텍스트 생성
+    lessons_ctx = ""
+    if feedback_list:
+        lessons_ctx = "[YOUR PAST MISTAKES & LESSONS - DO NOT REPEAT!]\n"
+        for f in feedback_list:
+            lessons_ctx += f"- Date: {f['date']} | Result: {f['result']} | Lesson: {f['feedback']}\n"
+    else:
+        lessons_ctx = "[No specific past lessons found.]"
 
     tech_injection = tech_data['summary'] if tech_data else "[Technical Error] Calculation Failed."
 
@@ -193,7 +193,7 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memories, news_dat
     [User Profile] 
     {profile_str}
     
-    [Hard Mathematical Facts - DO NOT HALLUCINATE]
+    [Hard Mathematical Facts]
     {tech_injection}
     
     [Recent News] 
@@ -203,9 +203,11 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memories, news_dat
     {weekly_txt}
     {daily_txt}
     
-    [Reflection]
+    [Past Performance]
     {gap_summary}
     {reflection_ctx}
+    
+    {lessons_ctx}
     
     [Instructions]
     1. **Style**: Speak to {USER_NAME} like a professional hedge fund manager. Use straight talk (반말). Be cynical but accurate.
@@ -213,7 +215,7 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memories, news_dat
        - If RSI < 30, emphasize "Oversold opportunity".
        - If MACD Golden Cross, emphasize "Trend Reversal".
        - If Price < MA50, warn about "Downtrend".
-    3. **Consistency**: Check your [Reflection]. If you were wrong before, admit it and adjust.
+    3. **Self-Correction**: STRICTLY review [YOUR PAST MISTAKES & LESSONS]. If you failed before with a similar pattern, acknowledge it and adjust your strategy.
     
     [Output Format]
     전략: (매수추천 / 관망 / 매도권고 / 매수대기)
@@ -226,7 +228,8 @@ def get_strategy_report(ticker, chart_data_set, is_open, past_memories, news_dat
     코멘트:
     1. **기술적 팩트 체크**: (Mention RSI, MACD, MA50 explicitly based on provided data)
     2. **뉴스/재료 분석**: (Connect news to price movement)
-    3. **머비스의 판단**: (Final conclusion)
+    3. **과거 경험 적용**: (Mention if any lesson was applied from 'Past Mistakes')
+    4. **머비스의 판단**: (Final conclusion)
     """
     
     try:
@@ -264,7 +267,13 @@ def analyze_stock(item):
     is_open = kis_scan.is_market_open_check()
     past_memories = load_memories(ticker)
     
-    report = get_strategy_report(ticker, chart_set, is_open, past_memories, news_data, tech_data)
+    # [신규] DB에서 과거 오답노트 조회
+    feedback_list = []
+    if hasattr(mervis_bigquery, 'get_past_lessons'):
+        feedback_list = mervis_bigquery.get_past_lessons(ticker)
+    
+    # 리포트 생성 시 feedback_list 전달
+    report = get_strategy_report(ticker, chart_set, is_open, past_memories, news_data, tech_data, feedback_list)
     
     if "전략:" in report:
         save_memory(ticker, price, report, news_data)

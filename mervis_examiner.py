@@ -2,122 +2,171 @@ import mervis_bigquery
 import kis_chart
 import datetime
 import mervis_state
+from google import genai
+import secret
+
+# Gemini 클라이언트 설정 (반성문 작성용)
+client = genai.Client(api_key=secret.GEMINI_API_KEY)
+
+def generate_feedback(item):
+    """
+    [AI] 매매 결과에 대한 원인 분석 및 교훈 도출
+    """
+    try:
+        # PENDING은 분석 대상 아님
+        if item['result'] not in ['WIN', 'LOSE']:
+            return None
+
+        prompt = f"""
+        You are a strict trading coach. Analyze the following trade result.
+        
+        [Trade Info]
+        - Ticker: {item['ticker']}
+        - Action: {item['action']}
+        - Entry Price: ${item['entry_price']}
+        - Result: {item['result']} (WIN = Success, LOSE = Failed)
+        - Original Analysis Summary: {item['report'][:500]}...
+        
+        [Task]
+        Write a very short, brutal "Lesson Learned" (One sentence, Korean).
+        If LOSE: Why did the analysis fail? (e.g., "Ignored macro trend", "RSI was misleading")
+        If WIN: Why did it succeed? (e.g., "Good catch on volume spike")
+        
+        Output example:
+        "하락장에서는 과매도 시그널도 무시하고 관망했어야 함."
+        """
+        
+        response = client.models.generate_content(
+            model='gemini-2.0-flash', 
+            contents=prompt
+        )
+        return response.text.strip()
+    except Exception as e:
+        return f"피드백 생성 실패: {e}"
 
 def run_examination():
     """
-    [채점관 실행 V2]
-    BUY/SELL 적중률뿐만 아니라 HOLD(관망)의 기회비용/방어율까지 검증
+    [채점관 실행]
+    Phase 1: 채점 (WIN/LOSE 판정)
+    Phase 2: 피드백 (오답노트 작성)
     """
     print("\n" + "="*60)
-    print(" [Examiner] 자기 복기 시스템 (전수 채점 가동)")
+    print(" [Examiner] 자기 복기 시스템 (채점 및 심층 분석)")
     print("="*60)
     
-    # 데이터 정합성을 위해 실전 모드 강제
+    # 데이터 정합성을 위해 실전 모드
     mervis_state.set_mode("REAL")
     
+    # ---------------------------------------------------------
+    # Phase 1: 채점 (Grading)
+    # ---------------------------------------------------------
     pending_list = mervis_bigquery.get_pending_trades()
     
     if not pending_list:
-        print(" [Examiner] 채점할 대기 목록이 없습니다.")
-        return
-
-    print(f" [Examiner] 총 {len(pending_list)}건의 검증 대기 항목이 있습니다.")
-    
-    count_win = 0
-    count_lose = 0
-    count_pending = 0
-    today = datetime.datetime.now().date()
-
-    for item in pending_list:
-        ticker = item['ticker']
-        action = item['action']
-        entry_price = item['entry_price']
-        target = item['target']
-        cut = item['cut']
-        entry_date = item['date'] 
+        print(" [Grading] 채점할 대기 목록이 없습니다.")
+    else:
+        print(f" [Grading] 총 {len(pending_list)}건의 검증 대기 항목 채점 시작...")
         
-        # 차트 조회용 날짜 문자열
-        start_date_str = entry_date.strftime("%Y%m%d")
-        
-        # 해당 종목 일봉 차트 조회
-        daily_chart = kis_chart.get_daily_chart(ticker)
-        if not daily_chart:
-            print(f" -> [Skip] {ticker}: 차트 데이터 조회 실패")
-            continue
+        count_win = 0
+        count_lose = 0
+        count_pending = 0
+        today = datetime.datetime.now().date()
+
+        for item in pending_list:
+            ticker = item['ticker']
+            action = item['action']
+            entry_price = item['entry_price']
+            target = item['target']
+            cut = item['cut']
+            entry_date = item['date'] 
             
-        # 예측 시점 이후의 캔들만 필터링 & 정렬
-        future_candles = []
-        for candle in daily_chart:
-            if candle['xymd'] >= start_date_str:
-                future_candles.append(candle)
-        future_candles.sort(key=lambda x: x['xymd'])
-        
-        result = "PENDING"
-        
-        # ---------------------------------------------------------
-        # [채점 로직]
-        # ---------------------------------------------------------
-        
-        # 1. 매수 (BUY) 채점
-        if action == "BUY":
-            for candle in future_candles:
-                high = float(candle['high'])
-                low = float(candle['low'])
-                if low <= cut:
-                    result = "LOSE" # 손절가 이탈
-                    break 
-                elif high >= target:
-                    result = "WIN"  # 목표가 도달
-                    break 
-
-        # 2. 매도 (SELL) 채점
-        elif action == "SELL":
-            for candle in future_candles:
-                high = float(candle['high'])
-                low = float(candle['low'])
-                if high >= cut:
-                    result = "LOSE" # 숏 손절
-                    break
-                elif low <= target:
-                    result = "WIN"  # 숏 익절
-                    break
-
-        # 3. 관망 (HOLD/WAIT) 채점 [신규]
-        elif action in ["HOLD", "WAIT"]:
-            # 기준: 진입가 대비 5% 이상 오르면 "아깝다(LOSE)"
-            # 기준: 3일(영업일 기준 아님, 단순 경과일) 지났는데 별거 없으면 "잘참았다(WIN)"
+            start_date_str = entry_date.strftime("%Y%m%d")
+            daily_chart = kis_chart.get_daily_chart(ticker)
             
-            opportunity_threshold = entry_price * 1.05 # +5% 급등 기준
-            days_passed = (today - entry_date.date()).days
+            if not daily_chart:
+                print(f" -> [Skip] {ticker}: 차트 데이터 조회 실패")
+                continue
+                
+            future_candles = []
+            for candle in daily_chart:
+                if candle['xymd'] >= start_date_str:
+                    future_candles.append(candle)
+            future_candles.sort(key=lambda x: x['xymd'])
             
-            has_risen = False
-            for candle in future_candles:
-                high = float(candle['high'])
-                if high >= opportunity_threshold:
-                    result = "LOSE" # 관망하랬는데 떡상함 (기회 놓침)
-                    has_risen = True
-                    break
+            result = "PENDING"
             
-            # 급등한 적이 없고, 시간이 충분히 흘렀다면 방어 성공으로 간주
-            if not has_risen:
-                if days_passed >= 3:
-                    result = "WIN" # 3일간 큰 상승 없었음 (방어 성공)
-                else:
-                    result = "PENDING" # 아직 지켜보는 중
+            # 1. 매수 (BUY) 채점
+            if action == "BUY":
+                for candle in future_candles:
+                    h, l = float(candle['high']), float(candle['low'])
+                    if l <= cut:
+                        result = "LOSE"
+                        break 
+                    elif h >= target:
+                        result = "WIN"
+                        break 
 
-        # ---------------------------------------------------------
-        
-        if result != "PENDING":
-            print(f" -> [결과확정] {ticker} ({action}): {result}")
-            mervis_bigquery.update_trade_result(ticker, entry_date, result)
-            
-            if result == "WIN": count_win += 1
-            else: count_lose += 1
-        else:
-            count_pending += 1
+            # 2. 매도 (SELL) 채점
+            elif action == "SELL":
+                for candle in future_candles:
+                    h, l = float(candle['high']), float(candle['low'])
+                    if h >= cut:
+                        result = "LOSE"
+                        break
+                    elif l <= target:
+                        result = "WIN"
+                        break
 
+            # 3. 관망 (HOLD/WAIT) 채점
+            elif action in ["HOLD", "WAIT"]:
+                opportunity_threshold = entry_price * 1.05
+                days_passed = (today - entry_date.date()).days
+                
+                has_risen = False
+                for candle in future_candles:
+                    if float(candle['high']) >= opportunity_threshold:
+                        result = "LOSE" # 기회 놓침
+                        has_risen = True
+                        break
+                
+                if not has_risen:
+                    if days_passed >= 3:
+                        result = "WIN" # 방어 성공
+                    else:
+                        result = "PENDING"
+
+            if result != "PENDING":
+                print(f" -> [결과확정] {ticker} ({action}): {result}")
+                mervis_bigquery.update_trade_result(ticker, entry_date, result)
+                
+                if result == "WIN": count_win += 1
+                else: count_lose += 1
+            else:
+                count_pending += 1
+
+        print(f" [Grading 완료] WIN: {count_win} | LOSE: {count_lose} | PENDING: {count_pending}")
+
+    # ---------------------------------------------------------
+    # Phase 2: 오답노트 작성 (Feedback Loop)
+    # ---------------------------------------------------------
     print("-" * 60)
-    print(f" [채점 완료] WIN: {count_win} | LOSE: {count_lose} | PENDING: {count_pending}")
+    print(" [Review] 오답노트 작성(피드백 생성) 시작...")
+    
+    # 채점은 됐는데 피드백이 없는 항목 조회
+    review_list = mervis_bigquery.get_trades_needing_feedback()
+    
+    if not review_list:
+        print(" -> 작성할 오답노트가 없습니다.")
+    else:
+        for item in review_list:
+            print(f" -> [{item['ticker']}] ({item['result']}) 원인 분석 중...", end="")
+            feedback = generate_feedback(item)
+            if feedback:
+                mervis_bigquery.update_trade_feedback(item['ticker'], item['date'], feedback)
+                print(f" 완료.\n     교훈: {feedback}")
+            else:
+                print(" 실패.")
+            
     print("=" * 60 + "\n")
 
 if __name__ == "__main__":
