@@ -11,6 +11,10 @@ mervis_token_cache.json
 # (선택) 타겟 종목 리스트가 개인적인 경우
 # target_codes.txt
 
+# 차트 이미지 저장 폴더 및 파일 무시
+charts/
+*.png
+
 # 보안 파일 (절대 업로드 금지)
 KIS_Developers_KEY.txt
 secret.py
