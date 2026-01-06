@@ -12,6 +12,7 @@ import mervis_profile
 import mervis_state 
 import mervis_news 
 import mervis_bigquery 
+import mervis_painter
 
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
 USER_NAME = getattr(secret, 'USER_NAME', '사용자')
@@ -279,3 +280,86 @@ def analyze_stock(item):
         save_memory(ticker, price, report, news_data)
     
     return { "code": ticker, "price": price, "report": report }
+
+def calculate_technical_indicators(daily_data):
+    try:
+        if not daily_data: return None, "데이터 부족", []
+        
+        df = pd.DataFrame(daily_data)
+        df = df.rename(columns={'clos': 'close', 'open': 'open', 'high': 'high', 'low': 'low', 'tvol': 'volume', 'xymd': 'date'})
+        cols = ['close', 'open', 'high', 'low', 'volume']
+        for c in cols: df[c] = pd.to_numeric(df[c], errors='coerce')
+        df = df.sort_values('date').reset_index(drop=True)
+        
+        if len(df) < 60: return None, "데이터 부족 (최소 60일)", []
+
+        # --- 1. 모든 지표 계산 ---
+        df['MA50'] = ta.sma(df['close'], length=50)
+        df['MA20'] = ta.sma(df['close'], length=20)
+        df['RSI'] = ta.rsi(df['close'], length=14)
+        
+        # MACD
+        macd = ta.macd(df['close'])
+        df = pd.concat([df, macd], axis=1)
+        
+        # Bollinger Bands
+        bb = ta.bbands(df['close'], length=20, std=2)
+        df = pd.concat([df, bb], axis=1)
+        
+        # Ichimoku (일목균형표)
+        ichimoku_df, _ = ta.ichimoku(df['high'], df['low'], df['close'])
+        df = pd.concat([df, ichimoku_df], axis=1)
+
+        # --- 2. 핵심 근거(Key Factors) 선정 로직 ---
+        curr = df.iloc[-1]
+        prev = df.iloc[-2]
+        key_factors = [] 
+
+        # A. [50일선 추세 전략]
+        # 가격이 50일선 근처에서 지지를 받거나 돌파할 때
+        if abs(curr['close'] - curr['MA50']) / curr['MA50'] < 0.02: # 2% 이내 근접
+            key_factors.append('MA50') # 추세선 지지 테스트 중
+
+        # B. [RSI 전략]
+        if curr['RSI'] <= 35 or curr['RSI'] >= 65:
+            key_factors.append('RSI')
+            
+        # C. [일목균형표 전략]
+        # 구름대(Span A, Span B) 위에 있는지 확인 (pandas_ta 컬럼명이 ISA_..., ISB_... 형태)
+        span_a_col = [c for c in df.columns if c.startswith('ISA_')][0]
+        span_b_col = [c for c in df.columns if c.startswith('ISB_')][0]
+        
+        span_a = curr[span_a_col]
+        span_b = curr[span_b_col]
+        
+        # 구름대 돌파 직후거나, 구름대 지지 중일 때
+        if curr['close'] > max(span_a, span_b):
+            # 전날엔 구름대 아래였다면 -> 돌파 (강력 매수)
+            if prev['close'] <= max(prev[span_a_col], prev[span_b_col]):
+                key_factors.append('Ichimoku')
+
+        # D. [MACD 전략]
+        macd_col = [c for c in df.columns if c.startswith('MACD_')][0]
+        signal_col = [c for c in df.columns if c.startswith('MACDs_')][0]
+        if abs(curr[macd_col] - curr[signal_col]) < 0.5:
+             key_factors.append('MACD')
+
+        # E. [볼린저밴드 전략]
+        bbu_col = [c for c in df.columns if c.startswith('BBU_')][0]
+        bbl_col = [c for c in df.columns if c.startswith('BBL_')][0]
+        if curr['close'] >= curr[bbu_col] * 0.99 or curr['close'] <= curr[bbl_col] * 1.01:
+            key_factors.append('Bollinger')
+
+        # 요약 텍스트 생성 (기존 유지)
+        tech_summary = f"""
+        [Technical Indicators]
+        Price: {curr['close']} | MA50: {curr['MA50']:.2f} | RSI: {curr['RSI']:.2f}
+        Cloud Top: {max(span_a, span_b):.2f} (Price is {'Above' if curr['close'] > max(span_a, span_b) else 'Below'} Cloud)
+        """
+
+        return {
+            "rsi": curr['RSI'], "ma50": curr['MA50'], "summary": tech_summary
+        }, None, key_factors 
+
+    except Exception as e:
+        return None, f"지표 오류: {e}", []
