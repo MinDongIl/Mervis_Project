@@ -11,11 +11,18 @@ USER_DATA_FILE = "mervis_user_data.json"
 # 로컬 파일 초기화 (공통 함수)
 def _reset_local_file():
     default_data = {
-        "investment_style": "Unidentified", 
+        "name": "User",
+        "investment_style": "SCALPING", # 기본값: SCALPING / SWING / VALUE
+        "risk_tolerance": "HIGH",       # HIGH / MEDIUM / LOW
         "goals": [], 
         "portfolio": {}, 
         "history_summary": [], 
-        "risk_tolerance": "Medium", 
+        "strategies": {                 # 세부 전략 On/Off
+            "use_ma_cross": True,
+            "use_vwap": True,
+            "use_rsi": True,
+            "use_bollinger": True
+        },
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M")
     }
     with open(USER_DATA_FILE, "w", encoding="utf-8") as f:
@@ -33,23 +40,49 @@ def reset_profile():
     new_data = _reset_local_file()
     
     # 2. BigQuery 초기화 (덮어쓰기)
-    mervis_bigquery.save_profile(new_data)
+    if hasattr(mervis_bigquery, 'save_profile'):
+        mervis_bigquery.save_profile(new_data)
     
     print("[System] User Profile has been completely RESET.")
     return "사용자 프로필이 초기화되었습니다. 새로운 투자 성향을 말씀해 주세요."
 
 # 프로필 로드
 def get_user_profile():
-    bq_profile = mervis_bigquery.get_profile()
-    if bq_profile:
-        return bq_profile
+    # 1차 시도: BigQuery에서 최신 프로필 로드
+    if hasattr(mervis_bigquery, 'get_profile'):
+        bq_profile = mervis_bigquery.get_profile()
+        if bq_profile:
+            # 로컬 파일과 동기화 (선택 사항)
+            with open(USER_DATA_FILE, "w", encoding="utf-8") as f:
+                json.dump(bq_profile, f, indent=4, ensure_ascii=False)
+            return bq_profile
 
+    # 2차 시도: 로컬 파일 로드
     init_user_data()
     try:
         with open(USER_DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
-        return {}
+        return _reset_local_file()
+
+# 스타일 수동 변경 함수 (Brain 등에서 호출)
+def update_trading_style(style):
+    """SCALPING, SWING, VALUE 중 하나로 변경"""
+    style = style.upper()
+    valid_styles = ["SCALPING", "SWING", "VALUE"]
+    if style not in valid_styles: style = "SCALPING"
+    
+    profile = get_user_profile()
+    profile['investment_style'] = style
+    profile['last_updated'] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    
+    # 저장
+    with open(USER_DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(profile, f, indent=4, ensure_ascii=False)
+    if hasattr(mervis_bigquery, 'save_profile'):
+        mervis_bigquery.save_profile(profile)
+        
+    return style
 
 # 유저 성향에서 '스캔용 키워드' 추출
 def get_preference_tags():
@@ -60,17 +93,15 @@ def get_preference_tags():
     tags = set()
     
     # 1. 투자 스타일 및 위험 감수도 분석
-    style = str(profile.get("investment_style", "")).lower()
-    risk = str(profile.get("risk_tolerance", "")).lower()
+    style = str(profile.get("investment_style", "")).upper()
+    risk = str(profile.get("risk_tolerance", "")).upper()
     
-    # 공격적/고위험 -> 레버리지, 기술주, 코인
-    if any(x in style for x in ["aggressive", "공격", "active"]) or \
-       any(x in risk for x in ["high", "높음"]):
+    # 공격적/단타 -> 레버리지, 기술주, 코인
+    if style == "SCALPING" or risk == "HIGH":
         tags.update(["LEV", "TECH", "COIN", "SEMI"])
         
-    # 안정적/보수적 -> 배당, 소비재, 방산
-    if any(x in style for x in ["stable", "안정", "passive", "long"]) or \
-       any(x in risk for x in ["low", "낮음"]):
+    # 가치투자/보수적 -> 배당, 소비재, 방산
+    if style == "VALUE" or risk == "LOW":
         tags.update(["DIV", "CONS", "DEF", "MACRO"])
 
     # 2. 목표 및 대화 내역에서 구체적 키워드 매칭
@@ -123,9 +154,11 @@ def update_user_profile(interaction_text, action_type="conversation"):
     
     [Rules]
     1. Ignore complaints or simple commands.
-    2. Extract explicit preferences (e.g., "I like AI stocks", "Stop trading volatile stocks").
-    3. Return "SKIP" if no meaningful info.
-    4. Otherwise, return ONLY the updated JSON.
+    2. Extract explicit preferences (e.g., "I like AI stocks" -> goals, "Change to Scalping" -> investment_style).
+    3. If user mentions "단타", set investment_style to "SCALPING".
+    4. If user mentions "가치투자", set investment_style to "VALUE".
+    5. Return "SKIP" if no meaningful info.
+    6. Otherwise, return ONLY the updated JSON.
     """
     
     try:
@@ -139,7 +172,9 @@ def update_user_profile(interaction_text, action_type="conversation"):
         updated_data = json.loads(cleaned_text)
         updated_data['last_updated'] = datetime.now().strftime("%Y-%m-%d %H:%M")
         
-        mervis_bigquery.save_profile(updated_data)
+        # 저장
+        if hasattr(mervis_bigquery, 'save_profile'):
+            mervis_bigquery.save_profile(updated_data)
         with open(USER_DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(updated_data, f, indent=4, ensure_ascii=False)
             
