@@ -1,0 +1,37 @@
+[연구 일지] 2026-01-08
+1. 주요 내용
+시스템 확장성을 위한 분석 로직의 완전 모듈화(Modularization), 투자 성향(단타/가치)에 따른 동적 페르소나 적용, 그리고 KIS와 yfinance를 결합한 하이브리드 수급 분석 체계 구축.
+
+2. 진행 요약
+기존의 비대해진 mervis_brain을 기능별(기술/기본/수급)로 분리하여 유지보수성을 극대화함. 사용자의 투자 성향(Scalping, Value, Swing)을 프로필에 정의하고, 이에 따라 머비스가 '보는 지표'와 '판단 로직'을 스스로 바꾸는 적응형 시스템을 구현함. 또한, 미국 주식 데이터의 한계(실시간 수급 부재)를 극복하기 위해 yfinance 라이브러리를 도입, 기술적 신호(거래량)와 정적 데이터(기관 보유 비중)를 교차 검증하는 하이브리드 분석 로직을 완성함.
+
+3. 주요 수정 및 개발 내용
+시스템 아키텍처 재설계 (Modular Architecture)
+
+모듈 분리: 모든 분석 로직을 modules 패키지 하위의 technical.py(기술), fundamental.py(재무/컨센서스), supply.py(수급)로 분할.
+
+Control Tower: mervis_brain.py는 직접 계산하지 않고, 사용자 성향에 맞춰 필요한 모듈만 호출하여 조립하는 지휘 통제소 역할로 변경.
+
+투자 성향별 동적 전략 (Adaptive Persona)
+
+성향 정의: mervis_profile.py에 investment_style (SCALPING, VALUE 등) 필드 및 관리 함수 추가.
+
+가변 프롬프트: 성향이 'SCALPING'이면 재무제표를 무시하고 호가/거래량에 집중하도록, 'VALUE'면 단기 등락을 무시하고 저평가 여부에 집중하도록 프롬프트 지침(Instructions)이 실시간으로 변경됨.
+
+하이브리드 데이터 분석 (Hybrid Analysis)
+
+데이터 확장: KIS API의 빈약한 해외 주식 정보를 보완하기 위해 yfinance 연동. (컨센서스, 기관 보유 비중, 공매도 비율 확보)
+
+수급 추론 로직: 실시간 창구 분석이 불가능한 미장 특성을 고려하여, technical 모듈의 'Volume Spike(거래량 폭증)' 신호와 supply 모듈의 'High Institutional Ownership(기관 비중)' 데이터를 결합. -> *"기관 비중이 높은 종목에서 거래량이 터졌으므로 신뢰할 수 있는 수급"*이라는 고급 추론 구현.
+
+4. 시행 착오 및 오류 해결
+[지표 계산 오류] technical.py 모듈 테스트 중 AttributeError: 'NoneType' object has no attribute 'iloc' 발생 및 VWAP 계산 실패.
+
+원인: pandas_ta 라이브러리의 VWAP 등 시계열 지표는 인덱스가 반드시 DatetimeIndex여야 하나, API 원본 데이터가 숫자 인덱스로 되어 있어 계산이 수행되지 않고 None을 반환함.
+
+해결: 데이터 전처리 함수(prepare_data)에서 날짜 컬럼을 datetime 객체로 변환 후 인덱스로 설정(set_index)하도록 수정하고, 지표 계산 실패 시 프로그램이 셧다운 되지 않도록 예외 처리(Null Check) 강화.
+
+5. 다음 목표
+실전 장(Pre-market 포함)에서 '스캔 -> 하이브리드 분석 -> 전략 자동 등록'으로 이어지는 [머비스 단타 최적화 루틴] 전체 프로세스 테스트.
+
+yfinance 데이터 로딩 속도(네트워크 지연)가 전체 분석 속도(40개 종목 스캔)에 미치는 영향 모니터링 및 최적화.
