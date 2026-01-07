@@ -10,20 +10,19 @@ import mervis_news
 import mervis_bigquery 
 import mervis_painter
 
-# 분리된 기술적 분석 모듈 임포트
-from modules import technical
+# 모든 분석 모듈 임포트
+from modules import technical, fundamental, supply
 
 client = genai.Client(api_key=secret.GEMINI_API_KEY)
 USER_NAME = getattr(secret, 'USER_NAME', '사용자')
 
-# --- 유틸리티 함수 (메모리, 데이터 요약 등) ---
+# --- 유틸리티 함수 ---
 
 def load_memories(ticker):
     memories = mervis_bigquery.get_multi_memories(ticker, limit=3)
     return memories if memories else []
 
 def extract_strategy_values(report_text):
-    """Gemini 리포트에서 전략, 목표가, 손절가 추출"""
     try:
         data = {"action": "HOLD", "target_price": 0.0, "cut_price": 0.0}
         if "매수추천" in report_text or "매수 권고" in report_text: 
@@ -88,12 +87,12 @@ def get_gap_analysis(ticker, last_date):
 
 # --- 리포트 생성 로직 (Control Tower) ---
 
-def get_strategy_report(ticker, chart_set, is_open, past_memories, news_data, tech_summary, feedback_list, user_profile):
+def get_strategy_report(ticker, chart_set, is_open, past_memories, news_data, analysis_results, feedback_list, user_profile):
     daily_txt = summarize_data(chart_set['daily'], "Daily", 15)
     weekly_txt = summarize_data(chart_set['weekly'], "Weekly", 8)
     current_price = chart_set['current_price']
     
-    # 과거 기억 및 오답노트 컨텍스트
+    # 과거 기억 및 오답노트
     gap_summary = get_gap_analysis(ticker, past_memories[0]['date']) if past_memories else "First Analysis."
     reflection_ctx = ""
     if past_memories:
@@ -103,31 +102,35 @@ def get_strategy_report(ticker, chart_set, is_open, past_memories, news_data, te
     if feedback_list:
         lessons_ctx = "[YOUR PAST MISTAKES & LESSONS - DO NOT REPEAT!]\n" + "\n".join([f"- {f['date']} Result:{f['result']} | Lesson:{f['feedback']}" for f in feedback_list])
 
-    # 투자 성향에 따른 프롬프트 지침 변경
+    # 각 모듈 분석 결과 추출
+    tech_summary = analysis_results.get('tech_summary', 'N/A')
+    fund_summary = analysis_results.get('fund_summary', 'N/A')
+    supply_conclusion = analysis_results.get('supply_conclusion', 'N/A')
+    supply_data = analysis_results.get('supply_data', {})
+
+    # 투자 성향별 프롬프트
     style = user_profile.get('investment_style', 'SCALPING')
     style_instruction = ""
     
     if style == 'SCALPING':
         style_instruction = """
         [MODE: SCALPING (단타)]
-        - **Core Indicators**: Volume Spikes, VWAP, 5-day/20-day MA Cross.
-        - **Action**: Look for immediate momentum. Entry must be precise.
-        - **Stop-Loss**: Very tight (within 2-3%).
-        - Ignore long-term valuation; focus on price action and flow.
+        - **Primary**: Technicals (Volume, VWAP, MA Cross) & Supply (Volume Spike).
+        - **Secondary**: Ignore Fundamentals.
+        - **Action**: Precise entry, Tight stop-loss (2-3%).
         """
     elif style == 'VALUE':
         style_instruction = """
         [MODE: VALUE INVESTING (가치투자)]
-        - **Core Indicators**: RSI (for dip buying), Sector Trends, Fundamentals.
-        - **Action**: Look for undervalued assets or solid uptrends.
-        - **Stop-Loss**: Wider range allowed to withstand volatility.
-        - Ignore short-term noise; focus on medium/long-term potential.
+        - **Primary**: Fundamentals (Growth, PE) & Institutional Supply.
+        - **Secondary**: Technicals (Only for dip buying using RSI).
+        - **Action**: Buy undervalued assets. Wide stop-loss.
         """
     else: # SWING
         style_instruction = """
         [MODE: SWING TRADING (스윙)]
-        - **Core Indicators**: MA50 Support, MACD Reversal, RSI Divergence.
-        - **Action**: Capture trend reversals or continuations over days/weeks.
+        - **Primary**: Trend (MA50, MACD) & Institutional Supply Check.
+        - **Action**: Ride the trend.
         """
 
     prompt = f"""
@@ -139,8 +142,16 @@ def get_strategy_report(ticker, chart_set, is_open, past_memories, news_data, te
     
     {style_instruction}
     
-    [Hard Mathematical Facts (From Modules)]
+    [1. Technical Facts (Chart)]
     {tech_summary}
+    
+    [2. Supply & Demand (Institutions)]
+    - Institutional Ownership: {supply_data.get('institution_pct', 0)*100:.1f}%
+    - Short Ratio: {supply_data.get('short_ratio', 0)}
+    - Hybrid Analysis Conclusion: **{supply_conclusion}**
+    
+    [3. Fundamental Facts (Financials)]
+    {fund_summary}
     
     [Recent News] 
     {news_data}
@@ -149,29 +160,30 @@ def get_strategy_report(ticker, chart_set, is_open, past_memories, news_data, te
     {weekly_txt}
     {daily_txt}
     
-    [Past Performance]
+    [Past Performance & Lessons]
     {gap_summary}
     {reflection_ctx}
-    
     {lessons_ctx}
     
     [Instructions]
     1. **Style**: Speak to {USER_NAME} in Korean (반말). Be professional, cynical, and direct.
-    2. **Analysis**: Strictly follow the [MODE] instructions above.
-    3. **Self-Correction**: Review [YOUR PAST MISTAKES]. If a similar pattern appears, warn the user.
+    2. **Analysis**: Strictly follow the [MODE] instructions. 
+       - If SCALPING, ignore Fundamentals.
+       - If VALUE, prioritize Fundamentals and Supply.
+    3. **Hybrid Check**: Cross-check 'Supply Analysis' with 'Technical Facts'. If volume spikes but institutions are low, warn about 'Fake Pump'.
     
     [Output Format]
     전략: (매수추천 / 관망 / 매도권고 / 매수대기)
     진입가: (Specific Price, $)
     목표가: (Specific Price, $)
     손절가: (Specific Price, $)
-    수익률: (Expected %)
-    확률: (Win Rate %)
+    수익률: (%)
+    확률: (%)
     
     코멘트:
-    1. **기술적 분석**: (Explain based on the specific indicators for the current MODE)
-    2. **재료/뉴스**: (Impact on price)
-    3. **과거 경험 적용**: (Did you apply any lessons?)
+    1. **기술적 분석**: (Chart analysis based on Mode)
+    2. **수급/펀더멘털**: (Analyze Institutional Supply & Financials if relevant)
+    3. **재료/뉴스**: (Impact)
     4. **머비스의 판단**: (Final conclusion)
     """
     
@@ -185,7 +197,6 @@ def analyze_stock(item):
     ticker = item['code']
     price = item.get('price', 0)
     
-    # 차트 데이터 수집
     d_data = kis_chart.get_daily_chart(ticker)
     w_data = kis_chart.get_weekly_chart(ticker)
     m_data = kis_chart.get_monthly_chart(ticker)
@@ -202,20 +213,38 @@ def analyze_stock(item):
     user_profile = mervis_profile.get_user_profile()
     style = user_profile.get('investment_style', 'SCALPING')
 
-    # 2. 성향에 따른 활성 전략 선택
+    # 2. 성향별 전략 설정
     active_strategies = []
     if style == 'SCALPING':
         active_strategies = ['ma_cross', 'volume_spike', 'vwap']
     elif style == 'VALUE':
         active_strategies = ['rsi', 'bollinger'] 
-    else: # SWING
+    else: 
         active_strategies = ['ma_cross', 'rsi', 'vwap']
 
-    # 3. 모듈형 기술적 분석 수행
-    # technical 모듈을 호출하여 필요한 지표만 계산하고 신호(signals)를 받음
-    tech_data, tech_err, signals = technical.analyze_technical_signals(d_data, active_strategies)
+    # --- 3. [핵심] 3대 모듈 순차 실행 ---
     
+    # A. 기술적 분석
+    tech_data, tech_err, tech_signals = technical.analyze_technical_signals(d_data, active_strategies)
     if tech_err: print(f" [Brain] Tech Warning: {tech_err}")
+
+    # B. 수급 분석 (기술적 신호 주입 -> 하이브리드 판단)
+    # yfinance 데이터를 쓰므로 ticker를 넘김
+    supply_data, supply_err, _ = supply.analyze_supply_structure(ticker)
+    supply_conclusion = supply.analyze_hybrid_supply(supply_data, tech_signals)
+
+    # C. 기본적 분석 (가치투자 데이터)
+    fund_data, fund_err, _ = fundamental.analyze_fundamentals(ticker)
+    
+    # 분석 결과 종합
+    analysis_results = {
+        'tech_summary': tech_data.get('summary', 'N/A') if tech_data else 'N/A',
+        'fund_summary': fund_data.get('summary', 'N/A') if fund_data and 'summary' in fund_data else str(fund_data), # fundamental 모듈 반환값 구조에 따라 조정
+        'supply_data': supply_data if supply_data else {},
+        'supply_conclusion': supply_conclusion
+    }
+    
+    # --- 모듈 실행 끝 ---
 
     volume_info = f"Volume: {latest_daily.get('acml_vol', 'N/A')}"
     chart_set = {
@@ -227,21 +256,18 @@ def analyze_stock(item):
     is_open = kis_scan.is_market_open_check()
     past_memories = load_memories(ticker)
     
-    # 오답노트 로드
     feedback_list = []
     if hasattr(mervis_bigquery, 'get_past_lessons'):
         feedback_list = mervis_bigquery.get_past_lessons(ticker)
     
-    # 4. 차트 그리기 (분석된 신호를 하이라이팅)
-    chart_path = mervis_painter.draw_chart(ticker, d_data, highlight_indicators=signals)
+    # 차트 그리기
+    chart_path = mervis_painter.draw_chart(ticker, d_data, highlight_indicators=tech_signals)
     if chart_path:
         print(f" [Painter] 차트 생성 완료 ({chart_path})")
 
-    # 5. 최종 리포트 생성 (tech_data['summary']는 모듈에서 만들어준 요약 텍스트)
-    tech_summary = tech_data.get('summary', 'N/A') if tech_data else 'N/A'
-    report = get_strategy_report(ticker, chart_set, is_open, past_memories, news_data, tech_summary, feedback_list, user_profile)
+    # 리포트 생성 (종합 분석 결과 전달)
+    report = get_strategy_report(ticker, chart_set, is_open, past_memories, news_data, analysis_results, feedback_list, user_profile)
     
-    # 결과 저장
     if "전략:" in report:
         save_memory(ticker, price, report, news_data)
     
