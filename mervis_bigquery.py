@@ -14,6 +14,7 @@ TABLE_USER = "user_info"
 TABLE_TICKERS = "ticker_universe"
 TABLE_BALANCE = "daily_balance"
 TABLE_ANALYSIS = "stock_analysis"
+TABLE_FEATURES = "daily_features" # ML 학습용 특징 저장소
 
 def get_client():
     if not os.path.exists(KEY_PATH):
@@ -91,13 +92,10 @@ def get_tickers_from_db(limit=40, tags=[]):
 # --- 기록 저장 함수들 ---
 
 def ensure_history_table_schema(client):
-    """
-    trade_history 테이블에 예측 데이터 및 피드백 컬럼이 없으면 추가
-    """
+    """trade_history 테이블 스키마 보정"""
     table_id = f"{client.project}.{DATASET_ID}.{TABLE_HISTORY}"
     try:
         table = client.get_table(table_id)
-        
         new_columns = [
             bigquery.SchemaField("action", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("target_price", "FLOAT", mode="NULLABLE"),
@@ -105,10 +103,8 @@ def ensure_history_table_schema(client):
             bigquery.SchemaField("result_status", "STRING", mode="NULLABLE"),
             bigquery.SchemaField("feedback", "STRING", mode="NULLABLE")
         ]
-        
         existing_fields = {f.name for f in table.schema}
         added_fields = []
-        
         for col in new_columns:
             if col.name not in existing_fields:
                 added_fields.append(col)
@@ -118,17 +114,12 @@ def ensure_history_table_schema(client):
             new_schema = original_schema[:] + added_fields
             table.schema = new_schema
             client.update_table(table, ["schema"])
-            
-    except Exception as e:
-        pass
+    except: pass
 
 def save_log(ticker, mode, price, report, news_summary="", action="WAITING", target_price=0.0, cut_price=0.0):
     client = get_client()
     if not client: return
-    
-    # 스키마 확인 및 업데이트
     ensure_history_table_schema(client)
-    
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_HISTORY}"
     
     schema = [
@@ -162,7 +153,6 @@ def save_log(ticker, mode, price, report, news_summary="", action="WAITING", tar
         "result_status": "PENDING",
         "feedback": None
     }]
-    
     try: client.insert_rows_json(table_ref, rows)
     except Exception as e: print(f" [DB Save Error] {e}")
 
@@ -218,6 +208,78 @@ def save_profile(profile_data):
     rows = [{"updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "profile_json": json.dumps(profile_data, ensure_ascii=False)}]
     try: client.insert_rows_json(table_ref, rows)
     except: pass
+
+# --- ML 학습용 특징 저장 함수 ---
+
+def save_daily_features(ticker, tech_data, fund_data, supply_data):
+    """
+    6,300개 종목의 기술/재무/수급 특징을 매일 저장하여 ML 학습 데이터셋 구축
+    """
+    client = get_client()
+    if not client: return
+    
+    table_ref = f"{client.project}.{DATASET_ID}.{TABLE_FEATURES}"
+    
+    # ML Feature Schema
+    schema = [
+        bigquery.SchemaField("date", "DATE", mode="REQUIRED"),
+        bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
+        
+        # Technical
+        bigquery.SchemaField("rsi", "FLOAT", mode="NULLABLE"),
+        bigquery.SchemaField("vwap_ratio", "FLOAT", mode="NULLABLE"), # 현재가/VWAP
+        bigquery.SchemaField("ma20_ratio", "FLOAT", mode="NULLABLE"), # 현재가/20일선
+        bigquery.SchemaField("vol_ratio", "FLOAT", mode="NULLABLE"),  # 현재볼륨/평균볼륨
+        
+        # Fundamental
+        bigquery.SchemaField("forward_pe", "FLOAT", mode="NULLABLE"),
+        bigquery.SchemaField("target_upside", "FLOAT", mode="NULLABLE"), # 목표가 괴리율
+        
+        # Supply
+        bigquery.SchemaField("inst_pct", "FLOAT", mode="NULLABLE"),   # 기관 비중
+        bigquery.SchemaField("short_ratio", "FLOAT", mode="NULLABLE"), # 공매도 비율
+        
+        # Target (Label) - 나중에 업데이트될 정답지 (다음날 수익률)
+        bigquery.SchemaField("next_day_return", "FLOAT", mode="NULLABLE")
+    ]
+    
+    try: client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
+    except: pass
+
+    # 데이터 추출 및 가공
+    try:
+        rsi = tech_data.get('rsi', 0)
+        
+        # VWAP Ratio (1.0 이상이면 상승세)
+        price = tech_data.get('price', 0)
+        vwap = tech_data.get('vwap', price) # 없으면 price로 대체
+        vwap_ratio = price / vwap if vwap and vwap != 0 else 1.0
+        
+        # Fundamental
+        val = fund_data.get('valuation', {})
+        con = fund_data.get('consensus', {})
+        target_mean = con.get('target_mean', price)
+        target_upside = (target_mean - price) / price if price and price != 0 else 0.0
+        
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        rows = [{
+            "date": today,
+            "ticker": ticker,
+            "rsi": float(rsi) if rsi else 0.0,
+            "vwap_ratio": float(vwap_ratio),
+            "ma20_ratio": 0.0, # 추후 모듈에서 계산해서 넘겨야 함 (일단 0)
+            "vol_ratio": 0.0,  # 추후 계산
+            "forward_pe": float(val.get('forward_pe', 0)) if val else 0.0,
+            "target_upside": float(target_upside),
+            "inst_pct": float(supply_data.get('institution_pct', 0)) if supply_data else 0.0,
+            "short_ratio": float(supply_data.get('short_ratio', 0)) if supply_data else 0.0,
+            "next_day_return": None # 정답은 내일 채워짐
+        }]
+        
+        client.insert_rows_json(table_ref, rows)
+    except Exception as e:
+        print(f" [DB Feature Save Error] {ticker}: {e}")
 
 # --- 데이터 조회 함수들 ---
 
@@ -312,7 +374,7 @@ def get_top_ranked_stocks(limit=5):
         except: pass
     return results
 
-# --- [채점 시스템용 함수] ---
+# --- 채점 시스템용 함수 ---
 
 def get_pending_trades():
     client = get_client()
@@ -362,25 +424,17 @@ def update_trade_result(ticker, log_date, result_status):
         print(f" [BQ Update Error] {ticker} 업데이트 실패: {e}")
 
 def update_trade_feedback(ticker, log_date, feedback):
-    """
-    오답노트(피드백) 저장 - 타입 불일치 오류(DATETIME vs TIMESTAMP) 해결 버전
-    """
     client = get_client()
     if not client: return
     
-    # 날짜를 문자열로 변환 ('yyyy-mm-dd 10:00:00%')
     date_str = log_date.strftime('%Y-%m-%d %H:%M:%S')
     
-    # DB의 log_date가 DATETIME이든 TIMESTAMP든 상관없이, 
-    # 둘 다 STRING으로 변환해서 비교.
     query = f"""
         UPDATE `{client.project}.{DATASET_ID}.{TABLE_HISTORY}`
         SET feedback = @feedback
         WHERE ticker = @ticker 
           AND CAST(log_date AS STRING) LIKE @date_pattern
     """
-    
-    # 'yyyy-mm-dd 10:00:00%' 형태로 검색하여 미세한 시간 차이(마이크로초) 무시
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
             bigquery.ScalarQueryParameter("feedback", "STRING", feedback),
@@ -388,7 +442,6 @@ def update_trade_feedback(ticker, log_date, feedback):
             bigquery.ScalarQueryParameter("date_pattern", "STRING", f"{date_str}%")
         ]
     )
-    
     try:
         query_job = client.query(query, job_config=job_config)
         query_job.result()
@@ -396,9 +449,6 @@ def update_trade_feedback(ticker, log_date, feedback):
         print(f" [BQ Feedback Error] {ticker} 피드백 저장 실패: {e}")
 
 def get_trades_needing_feedback():
-    """
-    [NEW] 결과는 나왔으나 피드백이 없는 항목 조회
-    """
     client = get_client()
     if not client: return []
     
@@ -424,9 +474,6 @@ def get_trades_needing_feedback():
     except: return []
 
 def get_past_lessons(ticker, limit=5):
-    """
-    [RAG] 해당 종목의 과거 오답노트(피드백) 조회
-    """
     client = get_client()
     if not client: return []
     

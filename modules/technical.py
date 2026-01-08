@@ -15,7 +15,7 @@ def prepare_data(daily_data):
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors='coerce')
             
-    # 날짜 데이터 변환 및 인덱스 설정 (지표 계산 필수 조건)
+    # 날짜 데이터 변환 및 인덱스 설정
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'].astype(str), format='%Y%m%d', errors='coerce')
         df = df.sort_values('date')
@@ -33,7 +33,6 @@ def calc_rsi(df, length=14):
 
 def calc_vwap(df):
     try:
-        # VWAP 계산
         return ta.vwap(df['high'], df['low'], df['close'], df['volume'])
     except:
         return None
@@ -91,19 +90,23 @@ def check_vwap_trend(df):
     return False
 
 def analyze_technical_signals(daily_data, active_strategies):
-    # 활성화된 전략에 따라 지표 분석 수행
+    # 활성화된 전략에 따라 지표 분석 및 ML 데이터 산출
     df = prepare_data(daily_data)
-    # 최소 데이터 조건 (이동평균선 계산 등 고려)
     if df is None or len(df) < 20:
         return {}, "데이터 부족 또는 포맷 오류", []
 
     signals = []
     summary_data = {
         "price": df['close'].iloc[-1],
-        "volume": df['volume'].iloc[-1]
+        "volume": df['volume'].iloc[-1],
+        "rsi": 0.0,
+        "ma20_ratio": 0.0,
+        "vol_ratio": 0.0,
+        "vwap": 0.0
     }
 
     try:
+        # 1. 전략별 시그널 탐지
         if 'ma_cross' in active_strategies:
             if check_ma_cross_strategy(df):
                 signals.append("MA5_Cross_MA20")
@@ -115,28 +118,47 @@ def analyze_technical_signals(daily_data, active_strategies):
         if 'rsi' in active_strategies:
             rsi_status = check_rsi_strategy(df)
             if rsi_status: signals.append(f"RSI_{rsi_status}")
-            
-            rsi_series = calc_rsi(df)
-            if rsi_series is not None:
-                summary_data['rsi'] = rsi_series.iloc[-1]
 
         if 'vwap' in active_strategies:
             if check_vwap_trend(df):
                 signals.append("Price_Above_VWAP")
+
+        # 2. ML 학습용 Feature 계산 (전략 활성화 여부와 관계없이 항상 계산)
+        
+        # RSI
+        rsi_series = calc_rsi(df)
+        if rsi_series is not None:
+            summary_data['rsi'] = rsi_series.iloc[-1]
+
+        # VWAP
+        vwap_series = calc_vwap(df)
+        if vwap_series is not None:
+            summary_data['vwap'] = vwap_series.iloc[-1]
             
-            vwap_series = calc_vwap(df)
-            if vwap_series is not None:
-                summary_data['vwap'] = vwap_series.iloc[-1]
-            else:
-                summary_data['vwap'] = 0
+        # MA20 Ratio (이격도: 현재가 / 20일선)
+        ma20_series = calc_ma(df, 20)
+        if ma20_series is not None:
+            ma20_val = ma20_series.iloc[-1]
+            if ma20_val and ma20_val != 0:
+                summary_data['ma20_ratio'] = summary_data['price'] / ma20_val
+
+        # Volume Ratio (거래량 비율: 현재거래량 / 20일평균거래량)
+        vol_sma_series = ta.sma(df['volume'], length=20)
+        if vol_sma_series is not None:
+            vol_avg = vol_sma_series.iloc[-1]
+            if vol_avg and vol_avg != 0:
+                summary_data['vol_ratio'] = summary_data['volume'] / vol_avg
 
     except Exception as e:
         return summary_data, f"전략 계산 중 오류: {e}", signals
 
     # 요약 텍스트 생성
     summary_text = f"Price: {summary_data['price']}\n"
-    if 'rsi' in summary_data: summary_text += f"RSI: {summary_data.get('rsi', 0):.2f}\n"
-    if 'vwap' in summary_data: summary_text += f"VWAP: {summary_data.get('vwap', 0):.2f}\n"
+    summary_text += f"RSI: {summary_data['rsi']:.2f}\n"
+    summary_text += f"MA20 Ratio: {summary_data['ma20_ratio']:.2f}\n"
+    summary_text += f"Vol Ratio: {summary_data['vol_ratio']:.2f}\n"
     summary_text += f"Signals: {signals}"
+    
+    summary_data['summary'] = summary_text
 
     return summary_data, None, signals
