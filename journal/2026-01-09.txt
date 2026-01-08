@@ -1,0 +1,42 @@
+[연구 일지] 2026-01-09
+
+1. 주요 내용
+머신러닝(ML) 학습 데이터셋 구축을 위한 파이프라인 설계, 야간 자율 주행 크롤러(Nightly Crawler) 개발 및 고속 병렬 처리 최적화.
+
+2. 진행 요약
+어제 구축한 하이브리드 모듈 시스템을 기반으로, 실제 시장 전체 데이터(6,300개 종목)를 매일 밤 자동으로 수집하여 BigQuery 데이터 마트에 적재하는 자동화 체계를 완성함. 특히 단순 수집을 넘어, 동전주(Penny Stock)와 소외주를 사전에 걸러내는 '스마트 스킵' 기술과 멀티스레딩을 도입하여 데이터의 질(Quality)을 높이고 수집 속도를 획기적으로 개선함. 이로써 AI 학습을 위한 '정답지 만들기'의 초석을 다짐.
+
+3. 주요 수정 및 개발 내용
+ML Feature Engineering 및 DB 스키마 확장
+
+기술적 지표 강화: technical.py를 수정하여 단순 매수 신호뿐만 아니라, AI 학습에 필요한 수치형 데이터(ma20_ratio(이격도), vol_ratio(거래량 비율), vwap_ratio)를 산출하도록 업그레이드.
+
+데이터 적재 로직: mervis_bigquery.py에 save_daily_features 함수를 신설하여 기술/재무/수급 데이터를 통합 저장하는 구조 마련.
+
+고성능 크롤러 개발 (High-Performance Crawler)
+
+병렬 처리(Multi-threading): concurrent.futures를 활용해 Worker Thread를 10개로 확장, 기존 직렬 처리 대비 속도를 약 5~8배 향상시킴.
+
+스마트 스킵(Smart Skip): 모든 종목을 무겁게 분석(yfinance)하는 비효율을 제거. 1차적으로 가벼운 차트 데이터(KIS)를 조회하여 주가 $1 미만, 거래량 5만 주 미만인 종목은 즉시 폐기(Drop)하는 필터링 로직 적용.
+
+안정성 확보: 작업 도중 중단을 위한 Ctrl+C 핸들링 및 일시적 네트워크 오류 무시 로직 추가.
+
+4. 시행 착오 및 오류 해결
+[BigQuery 데이터 전송 오류]
+
+증상: save_daily_features 실행 중 Invalid JSON payload received. Unexpected token NaN 에러 발생하며 적재 실패.
+
+원인: Python의 float('nan') 값은 JSON 표준이 아니므로 BigQuery API가 수신을 거부함. 기술적 지표 계산 과정에서 데이터 부족으로 발생한 NaN이 그대로 전달됨.
+
+해결: safe_float 유틸리티 함수를 구현하여 NaN 및 Infinity 값을 강제로 0.0으로 치환(Sanitizing) 후 전송하도록 수정.
+
+[수집 속도 이슈]
+
+문제: 초기 단일 스레드 방식으로 6,300개 종목 순회 시 약 4시간 이상 소요되어 야간 배치 작업으로 부적합.
+
+해결: 스레드 풀(Thread Pool) 도입 및 배치 인서트(Batch Insert, 50개 단위) 적용으로 소요 시간을 40분 내외로 단축.
+
+5. 다음 목표
+리그 승격 시스템(League System) 가동: 밤새 수집된 daily_features 데이터를 기반으로, 특정 조건(수급 점수 상위, 이격도 적정 등)을 만족하는 '정예 40 종목'을 추출하는 SQL View 생성.
+
+시스템 연동: 기존의 랜덤 종목 추출 방식을 폐기하고, 크롤러가 선별한 데이터를 머비스의 장전 분석(Pre-market Analysis) 대상 리스트로 자동 연결.
