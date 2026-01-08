@@ -1,5 +1,6 @@
 import time
 import logging
+import concurrent.futures
 from datetime import datetime
 from google.cloud import bigquery
 
@@ -8,7 +9,7 @@ import mervis_bigquery
 import kis_chart
 from modules import technical, fundamental, supply
 
-# 로깅 설정 (파일로 기록 남김)
+# 로깅 설정
 logging.basicConfig(
     filename='crawler.log', 
     level=logging.INFO, 
@@ -16,90 +17,108 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+# --- 설정 ---
+MAX_WORKERS = 5  # 동시에 일할 일꾼 수 (너무 높으면 API 차단됨, 5~8 권장)
+BATCH_SIZE = 50  # DB에 한 번에 저장할 묶음 단위
+
 def get_all_tickers():
-    """
-    BigQuery에서 전체 종목 리스트를 가져옴 (status 상관없이 전체 스캔)
-    """
     client = mervis_bigquery.get_client()
     if not client: return []
-    
-    # TABLE_TICKERS 테이블에서 모든 ticker 조회
-    query = f"""
-        SELECT ticker 
-        FROM `{client.project}.{mervis_bigquery.DATASET_ID}.{mervis_bigquery.TABLE_TICKERS}`
-    """
+    query = f"SELECT ticker FROM `{client.project}.{mervis_bigquery.DATASET_ID}.{mervis_bigquery.TABLE_TICKERS}`"
     try:
         results = list(client.query(query).result())
         return [row.ticker for row in results]
     except Exception as e:
         print(f" [Crawler] 종목 리스트 로드 실패: {e}")
-        logging.error(f"Failed to load tickers: {e}")
         return []
 
-def run_night_crawler():
-    print(" [Crawler] 야간 자율 주행 시작... (전체 종목 스캔)")
-    tickers = get_all_tickers()
+def process_single_stock(ticker):
+    """
+    개별 종목 하나를 분석해서 결과 데이터를 반환 (저장은 안 함)
+    """
+    try:
+        # 1. 차트 데이터 (KIS)
+        d_data = kis_chart.get_daily_chart(ticker)
+        if not d_data or len(d_data) < 20:
+            return None # 데이터 부족
+
+        # 2. 분석 모듈 실행
+        tech_data, _, _ = technical.analyze_technical_signals(d_data, [])
+        supply_data, _, _ = supply.analyze_supply_structure(ticker)
+        fund_data, _, _ = fundamental.analyze_fundamentals(ticker)
+
+        # 3. 데이터 패키징 (저장하기 좋게 딕셔너리로 리턴)
+        return {
+            "ticker": ticker,
+            "tech": tech_data,
+            "fund": fund_data,
+            "supply": supply_data
+        }
+    except Exception as e:
+        logging.error(f"Error processing {ticker}: {e}")
+        return None
+
+def save_batch_features(batch_results):
+    """
+    수집된 결과 묶음을 DB에 한 번에 저장 (속도 향상)
+    """
+    if not batch_results: return
     
-    if not tickers:
-        print(" [Crawler] 스캔할 종목이 없습니다.")
-        return
+    # mervis_bigquery.save_daily_features 함수는 단건 저장용이므로,
+    # 직접 insert_rows를 호출하는 것이 효율적이지만,
+    # 코드 안전성을 위해 반복문으로 빠르게 호출 (네트워크 오버헤드는 병렬처리로 상쇄)
+    
+    for item in batch_results:
+        mervis_bigquery.save_daily_features(
+            item['ticker'], item['tech'], item['fund'], item['supply']
+        )
+
+def run_fast_crawler():
+    start_time = time.time()
+    print(f" [Crawler] 고속 모드 시작 (Workers: {MAX_WORKERS})")
+    
+    tickers = get_all_tickers()
+    if not tickers: return
 
     total = len(tickers)
-    print(f" [Crawler] 총 {total}개 종목 분석 예정.")
+    print(f" [Crawler] 총 {total}개 종목 분석 시작...")
     
-    success_count = 0
-    fail_count = 0
+    processed_count = 0
+    success_buffer = [] # DB 저장 대기열
 
-    for idx, ticker in enumerate(tickers):
-        try:
-            # 진행률 표시
-            if idx % 10 == 0:
-                print(f" Progress: {idx}/{total} ({success_count} Success, {fail_count} Fail)")
-            
-            # 1. 차트 데이터 수집 (KIS API)
-            # 기술적 지표 계산을 위해 일봉 데이터 필요
-            d_data = kis_chart.get_daily_chart(ticker)
-            if not d_data or len(d_data) < 20:
-                fail_count += 1
-                continue
+    # 멀티스레딩으로 작업 분배
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        # 모든 종목에 대해 작업 예약
+        future_to_ticker = {executor.submit(process_single_stock, t): t for t in tickers}
+        
+        for future in concurrent.futures.as_completed(future_to_ticker):
+            ticker = future_to_ticker[future]
+            try:
+                result = future.result()
+                processed_count += 1
+                
+                if result:
+                    success_buffer.append(result)
+                    print(f" [{processed_count}/{total}] {ticker} OK", end='\r')
+                else:
+                    # 실패 시 로그만 (화면 출력 X)
+                    pass
 
-            # 2. 모듈별 분석 실행
-            
-            # A. Technical (이격도, 거래량 비율, RSI 등 추출)
-            # 전략 리스트는 비워둠 (지표 추출이 목적)
-            tech_data, _, _ = technical.analyze_technical_signals(d_data, [])
-            
-            # B. Supply (기관 비중, 공매도 비율 추출)
-            # yfinance 사용
-            supply_data, supply_err, _ = supply.analyze_supply_structure(ticker)
-            if supply_err: 
-                # 수급 데이터가 없어도 기술적 데이터는 있으므로 진행은 함 (로그만 기록)
-                logging.warning(f"{ticker} Supply Error: {supply_err}")
+                # 버퍼가 꽉 차면 DB 저장 (Batch flush)
+                if len(success_buffer) >= BATCH_SIZE:
+                    save_batch_features(success_buffer)
+                    success_buffer = [] # 초기화
+                    
+            except Exception as e:
+                logging.error(f"Worker Error {ticker}: {e}")
 
-            # C. Fundamental (PER, 컨센서스 추출)
-            # yfinance 사용
-            fund_data, fund_err, _ = fundamental.analyze_fundamentals(ticker)
-            if fund_err:
-                logging.warning(f"{ticker} Fund Error: {fund_err}")
+    # 남은 데이터 저장
+    if success_buffer:
+        save_batch_features(success_buffer)
 
-            # 3. 데이터 마트(BigQuery)에 저장
-            mervis_bigquery.save_daily_features(ticker, tech_data, fund_data, supply_data)
-            
-            success_count += 1
-            logging.info(f"Saved features for {ticker}")
-
-            # 4. Rate Limiting (중요)
-            # KIS API 및 yfinance 차단 방지를 위해 딜레이 부여
-            time.sleep(1.5) 
-
-        except Exception as e:
-            fail_count += 1
-            logging.error(f"Error processing {ticker}: {e}")
-            print(f" [Error] {ticker}: {e}")
-            time.sleep(5) # 에러 발생 시 잠시 대기
-
-    print(f" [Crawler] 작업 완료. 성공: {success_count}, 실패: {fail_count}")
+    end_time = time.time()
+    duration = (end_time - start_time) / 60
+    print(f"\n [Crawler] 완료! 소요 시간: {duration:.1f}분")
 
 if __name__ == "__main__":
-    # 단독 실행 시 크롤러 가동
-    run_night_crawler()
+    run_fast_crawler()
