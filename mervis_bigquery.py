@@ -2,6 +2,7 @@ from google.cloud import bigquery
 from google.oauth2 import service_account
 import os
 import json
+import math
 from datetime import datetime
 from deep_translator import GoogleTranslator
 import mervis_state
@@ -14,7 +15,7 @@ TABLE_USER = "user_info"
 TABLE_TICKERS = "ticker_universe"
 TABLE_BALANCE = "daily_balance"
 TABLE_ANALYSIS = "stock_analysis"
-TABLE_FEATURES = "daily_features" # ML 학습용 특징 저장소
+TABLE_FEATURES = "daily_features"
 
 def get_client():
     if not os.path.exists(KEY_PATH):
@@ -89,10 +90,8 @@ def get_tickers_from_db(limit=40, tags=[]):
     if not results: return []
     return [{"code": row.ticker, "tag": row.sector} for row in results]
 
-# --- 기록 저장 함수들 ---
-
 def ensure_history_table_schema(client):
-    """trade_history 테이블 스키마 보정"""
+    # trade_history 테이블 스키마 보정
     table_id = f"{client.project}.{DATASET_ID}.{TABLE_HISTORY}"
     try:
         table = client.get_table(table_id)
@@ -209,12 +208,18 @@ def save_profile(profile_data):
     try: client.insert_rows_json(table_ref, rows)
     except: pass
 
-# --- ML 학습용 특징 저장 함수 ---
+def safe_float(val, default=0.0):
+    # NaN 및 Infinity 값 처리
+    try:
+        f_val = float(val)
+        if math.isnan(f_val) or math.isinf(f_val):
+            return default
+        return f_val
+    except:
+        return default
 
 def save_daily_features(ticker, tech_data, fund_data, supply_data):
-    """
-    6,300개 종목의 기술/재무/수급 특징을 매일 저장하여 ML 학습 데이터셋 구축
-    """
+    # ML 학습용 데이터 저장
     client = get_client()
     if not client: return
     
@@ -246,16 +251,18 @@ def save_daily_features(ticker, tech_data, fund_data, supply_data):
     try: client.create_table(bigquery.Table(table_ref, schema=schema), exists_ok=True)
     except: pass
 
-    # 데이터 추출 및 가공
     try:
         rsi = tech_data.get('rsi', 0.0)
         
         # VWAP Ratio
         price = tech_data.get('price', 0.0)
         vwap = tech_data.get('vwap', 0.0)
-        vwap_ratio = price / vwap if vwap and vwap != 0 else 1.0
-
-        # Technical (모듈에서 계산된 값 사용)
+        
+        if safe_float(vwap) == 0.0:
+            vwap_ratio = 1.0
+        else:
+            vwap_ratio = price / vwap
+            
         ma20_ratio = tech_data.get('ma20_ratio', 0.0)
         vol_ratio = tech_data.get('vol_ratio', 0.0)
         
@@ -263,29 +270,31 @@ def save_daily_features(ticker, tech_data, fund_data, supply_data):
         val = fund_data.get('valuation', {}) if fund_data else {}
         con = fund_data.get('consensus', {}) if fund_data else {}
         target_mean = con.get('target_mean', 0.0)
-        target_upside = (target_mean - price) / price if price and price != 0 and target_mean else 0.0
+        
+        if safe_float(price) == 0.0:
+            target_upside = 0.0
+        else:
+            target_upside = (target_mean - price) / price if target_mean else 0.0
         
         today = datetime.now().strftime("%Y-%m-%d")
         
         rows = [{
             "date": today,
             "ticker": ticker,
-            "rsi": float(rsi),
-            "vwap_ratio": float(vwap_ratio),
-            "ma20_ratio": float(ma20_ratio),
-            "vol_ratio": float(vol_ratio),
-            "forward_pe": float(val.get('forward_pe', 0)) if val else 0.0,
-            "target_upside": float(target_upside),
-            "inst_pct": float(supply_data.get('institution_pct', 0)) if supply_data else 0.0,
-            "short_ratio": float(supply_data.get('short_ratio', 0)) if supply_data else 0.0,
-            "next_day_return": None # 정답은 내일 채워짐
+            "rsi": safe_float(rsi),
+            "vwap_ratio": safe_float(vwap_ratio, 1.0),
+            "ma20_ratio": safe_float(ma20_ratio, 0.0),
+            "vol_ratio": safe_float(vol_ratio, 0.0),
+            "forward_pe": safe_float(val.get('forward_pe', 0.0)),
+            "target_upside": safe_float(target_upside, 0.0),
+            "inst_pct": safe_float(supply_data.get('institution_pct', 0.0)),
+            "short_ratio": safe_float(supply_data.get('short_ratio', 0.0)),
+            "next_day_return": None 
         }]
         
         client.insert_rows_json(table_ref, rows)
     except Exception as e:
         print(f" [DB Feature Save Error] {ticker}: {e}")
-
-# --- 데이터 조회 함수들 ---
 
 def get_recent_memory(ticker):
     client = get_client()
@@ -377,8 +386,6 @@ def get_top_ranked_stocks(limit=5):
                 })
         except: pass
     return results
-
-# --- 채점 시스템용 함수 ---
 
 def get_pending_trades():
     client = get_client()
