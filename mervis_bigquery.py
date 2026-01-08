@@ -227,19 +227,19 @@ def save_daily_features(ticker, tech_data, fund_data, supply_data):
         
         # Technical
         bigquery.SchemaField("rsi", "FLOAT", mode="NULLABLE"),
-        bigquery.SchemaField("vwap_ratio", "FLOAT", mode="NULLABLE"), # 현재가/VWAP
-        bigquery.SchemaField("ma20_ratio", "FLOAT", mode="NULLABLE"), # 현재가/20일선
-        bigquery.SchemaField("vol_ratio", "FLOAT", mode="NULLABLE"),  # 현재볼륨/평균볼륨
+        bigquery.SchemaField("vwap_ratio", "FLOAT", mode="NULLABLE"), 
+        bigquery.SchemaField("ma20_ratio", "FLOAT", mode="NULLABLE"), 
+        bigquery.SchemaField("vol_ratio", "FLOAT", mode="NULLABLE"),
         
         # Fundamental
         bigquery.SchemaField("forward_pe", "FLOAT", mode="NULLABLE"),
-        bigquery.SchemaField("target_upside", "FLOAT", mode="NULLABLE"), # 목표가 괴리율
+        bigquery.SchemaField("target_upside", "FLOAT", mode="NULLABLE"),
         
         # Supply
-        bigquery.SchemaField("inst_pct", "FLOAT", mode="NULLABLE"),   # 기관 비중
-        bigquery.SchemaField("short_ratio", "FLOAT", mode="NULLABLE"), # 공매도 비율
+        bigquery.SchemaField("inst_pct", "FLOAT", mode="NULLABLE"),
+        bigquery.SchemaField("short_ratio", "FLOAT", mode="NULLABLE"),
         
-        # Target (Label) - 나중에 업데이트될 정답지 (다음날 수익률)
+        # Target (Label)
         bigquery.SchemaField("next_day_return", "FLOAT", mode="NULLABLE")
     ]
     
@@ -248,28 +248,32 @@ def save_daily_features(ticker, tech_data, fund_data, supply_data):
 
     # 데이터 추출 및 가공
     try:
-        rsi = tech_data.get('rsi', 0)
+        rsi = tech_data.get('rsi', 0.0)
         
-        # VWAP Ratio (1.0 이상이면 상승세)
-        price = tech_data.get('price', 0)
-        vwap = tech_data.get('vwap', price) # 없으면 price로 대체
+        # VWAP Ratio
+        price = tech_data.get('price', 0.0)
+        vwap = tech_data.get('vwap', 0.0)
         vwap_ratio = price / vwap if vwap and vwap != 0 else 1.0
+
+        # Technical (모듈에서 계산된 값 사용)
+        ma20_ratio = tech_data.get('ma20_ratio', 0.0)
+        vol_ratio = tech_data.get('vol_ratio', 0.0)
         
         # Fundamental
-        val = fund_data.get('valuation', {})
-        con = fund_data.get('consensus', {})
-        target_mean = con.get('target_mean', price)
-        target_upside = (target_mean - price) / price if price and price != 0 else 0.0
+        val = fund_data.get('valuation', {}) if fund_data else {}
+        con = fund_data.get('consensus', {}) if fund_data else {}
+        target_mean = con.get('target_mean', 0.0)
+        target_upside = (target_mean - price) / price if price and price != 0 and target_mean else 0.0
         
         today = datetime.now().strftime("%Y-%m-%d")
         
         rows = [{
             "date": today,
             "ticker": ticker,
-            "rsi": float(rsi) if rsi else 0.0,
+            "rsi": float(rsi),
             "vwap_ratio": float(vwap_ratio),
-            "ma20_ratio": 0.0, # 추후 모듈에서 계산해서 넘겨야 함 (일단 0)
-            "vol_ratio": 0.0,  # 추후 계산
+            "ma20_ratio": float(ma20_ratio),
+            "vol_ratio": float(vol_ratio),
             "forward_pe": float(val.get('forward_pe', 0)) if val else 0.0,
             "target_upside": float(target_upside),
             "inst_pct": float(supply_data.get('institution_pct', 0)) if supply_data else 0.0,
