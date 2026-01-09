@@ -503,3 +503,20 @@ def get_past_lessons(ticker, limit=5):
             "feedback": row.feedback
         } for row in results]
     except: return []
+
+def get_all_tickers_simple():
+    """
+    [GUI 검색용] 전체 종목 티커만 빠르게 로드
+    """
+    client = get_client()
+    if not client: return []
+    
+    # 정렬하여 로드
+    query = f"SELECT ticker FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}` ORDER BY ticker"
+    try:
+        # 쿼리 실행 (타임아웃 설정 권장)
+        results = list(client.query(query).result())
+        return [row.ticker for row in results]
+    except Exception as e:
+        print(f" [DB Error] 전체 티커 로드 실패: {e}")
+        return []

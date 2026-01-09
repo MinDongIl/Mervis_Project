@@ -6,7 +6,6 @@ import json
 import re
 import mervis_profile
 import mervis_state 
-# import mervis_news  # 뉴스 모듈 비활성화
 import mervis_bigquery 
 import mervis_painter
 
@@ -50,7 +49,7 @@ def save_memory(ticker, price, report, news_data):
         mode=mode, 
         price=price,
         report=report, 
-        news_summary="News Disabled", # 뉴스 데이터 대신 고정값 저장
+        news_summary="News Disabled", 
         action=strategy_data['action'],
         target_price=strategy_data['target_price'],
         cut_price=strategy_data['cut_price']
@@ -87,7 +86,7 @@ def get_gap_analysis(ticker, last_date):
 
 # --- 리포트 생성 로직 ---
 
-def get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_results, feedback_list, user_profile):
+def get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_results, feedback_list, user_profile, is_realtime=False):
     daily_txt = summarize_data(chart_set['daily'], "Daily", 15)
     weekly_txt = summarize_data(chart_set['weekly'], "Weekly", 8)
     current_price = chart_set['current_price']
@@ -143,9 +142,13 @@ def get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_resu
         - Focus on Trend (MA) and Future Performance.
         """
 
+    # 실시간 데이터 여부에 따른 뉘앙스 추가
+    time_ctx = "REAL-TIME LIVE DATA" if is_realtime else "Static Data (Market Closed or Delayed)"
+
     prompt = f"""
     You are 'Mervis', a professional AI Quant Trader customized for {USER_NAME}.
-    Current Status: {'MARKET OPEN' if is_open else 'MARKET CLOSED'} | Ticker: {ticker} | Price: ${current_price}
+    Current Status: {'MARKET OPEN' if is_open else 'MARKET CLOSED'} | Data Source: {time_ctx}
+    Ticker: {ticker} | **Current Price: ${current_price}**
     
     [User Profile] 
     {json.dumps(user_profile, indent=2, ensure_ascii=False)}
@@ -201,9 +204,13 @@ def get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_resu
         return f"전략: 분석불가\n코멘트: API Error - {e}"
 
 def analyze_stock(item):
+    """
+    종목 분석 메인 함수 (실시간 데이터 연동)
+    """
     ticker = item['code']
     price = item.get('price', 0)
     
+    # 1. 차트 데이터 로드 (Batch/Static)
     d_data = kis_chart.get_daily_chart(ticker)
     w_data = kis_chart.get_weekly_chart(ticker)
     m_data = kis_chart.get_monthly_chart(ticker)
@@ -212,9 +219,25 @@ def analyze_stock(item):
     if not d_data: return None
 
     latest_daily = d_data[0]
-    if price == 0:
-        p_val = latest_daily.get('clos') or latest_daily.get('last')
-        if p_val: price = float(p_val)
+    volume_info = f"Vol: {latest_daily.get('acml_vol', 0)}"
+
+    # 2. 실시간 데이터 확인 (Websocket State)
+    # 웹소켓이 돌고 있고, 해당 종목이 감시 중이라면 최신가를 가져온다.
+    realtime_data = mervis_state.get_realtime_data(ticker)
+    is_realtime = False
+
+    if realtime_data:
+        price = realtime_data['price']
+        change_rate = realtime_data.get('change', 0.0)
+        rt_vol = realtime_data.get('volume', 0)
+        volume_info = f"Live Vol: {rt_vol} ({change_rate}%)"
+        is_realtime = True
+        print(f" [Brain] {ticker} 실시간 데이터 적용: ${price}")
+    else:
+        # 실시간 데이터가 없으면 API 조회값이나 일봉 종가 사용
+        if price == 0:
+            p_val = latest_daily.get('clos') or latest_daily.get('last')
+            if p_val: price = float(p_val)
 
     # 사용자 프로필 로드
     user_profile = mervis_profile.get_user_profile()
@@ -231,7 +254,7 @@ def analyze_stock(item):
 
     # 3대 모듈 실행
     
-    # 기술적 분석
+    # 기술적 분석 (일봉 데이터 기준)
     tech_data, tech_err, tech_signals = technical.analyze_technical_signals(d_data, active_strategies)
     if tech_err: print(f" [Brain] Tech Warning: {tech_err}")
 
@@ -250,15 +273,12 @@ def analyze_stock(item):
         'supply_conclusion': supply_conclusion
     }
     
-    volume_info = f"Volume: {latest_daily.get('acml_vol', 'N/A')}"
     chart_set = {
         'daily': d_data, 'weekly': w_data, 'monthly': m_data, 'yearly': y_data,
         'current_price': price, 'volume_info': volume_info
     }
     
-    # 뉴스 데이터 제거 (빈 값)
     news_data = "" 
-    
     is_open = kis_scan.is_market_open_check()
     past_memories = load_memories(ticker)
     
@@ -271,8 +291,8 @@ def analyze_stock(item):
     if chart_path:
         print(f" [Painter] 차트 생성 완료 ({chart_path})")
 
-    # 리포트 생성
-    report = get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_results, feedback_list, user_profile)
+    # 리포트 생성 (is_realtime 플래그 전달)
+    report = get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_results, feedback_list, user_profile, is_realtime=is_realtime)
     
     if "전략:" in report:
         save_memory(ticker, price, report, news_data)

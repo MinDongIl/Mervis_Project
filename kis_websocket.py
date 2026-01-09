@@ -17,13 +17,12 @@ MAX_WATCH_LIMIT = 40
 # 글로벌 감시자 인스턴스
 _active_watcher = None
 
-# 사용자가 직접 지정한 알림 타겟 (리스트 구조로 변경하여 다중 조건 지원)
-# 구조: { "TSLA": [ {"price": 300.0, "cond": "GE", "tag": "목표가"}, ... ] }
+# 사용자가 직접 지정한 알림 타겟
 _user_watch_list = {}
 
 def add_watch_condition(ticker, target_price, condition="GE", tag="지정가"):
     """
-    [외부 호출용] 감시 조건 추가 (List Append 방식)
+    [외부 호출용] 감시 조건 추가
     """
     global _user_watch_list, _active_watcher
     ticker = ticker.upper()
@@ -70,7 +69,7 @@ class MervisWatcher:
         self.base_url = WS_URL_REAL 
 
     def _subscribe_target(self, ticker):
-        """KIS 서버에 구독 요청 전송"""
+        # KIS 서버에 구독 요청 전송
         if not self.ws or not self.is_running: return
         
         tr_key = f"DNAS{ticker}"
@@ -90,7 +89,7 @@ class MervisWatcher:
             logging.error(f"[Watcher] Subscribe Failed ({ticker}): {e}")
 
     def _unsubscribe_target(self, ticker):
-        """KIS 서버에 구독 취소 요청 전송"""
+        # KIS 서버에 구독 취소 요청 전송
         if not self.ws or not self.is_running: return
         
         tr_key = f"DNAS{ticker}"
@@ -112,9 +111,7 @@ class MervisWatcher:
             logging.error(f"[Watcher] Unsubscribe Failed ({ticker}): {e}")
 
     def manage_subscription_limit(self):
-        """
-        구독 종목 수가 한계를 초과하면 사용자 지정이 아닌 종목 제거
-        """
+        # 구독 종목 수 한계 초과 시 사용자 지정 외 종목 제거
         if len(self.subscribed_tickers) < MAX_WATCH_LIMIT:
             return
 
@@ -137,9 +134,7 @@ class MervisWatcher:
             self._subscribe_target(ticker)
 
     def check_user_alert(self, ticker, current_price, change_rate):
-        """
-        체결 시 다중 조건 확인 및 달성된 조건만 삭제
-        """
+        # 체결 시 다중 조건 확인 및 달성된 조건 삭제
         global _user_watch_list
         if ticker not in _user_watch_list: return
 
@@ -167,7 +162,7 @@ class MervisWatcher:
                 notification.send_alert("매매 신호 감지", msg, color=noti_color)
                 triggered_indexes.append(i)
 
-        # 달성된 조건만 역순으로 삭제 (인덱스 밀림 방지)
+        # 달성된 조건만 역순으로 삭제
         for i in sorted(triggered_indexes, reverse=True):
             del _user_watch_list[ticker][i]
 
@@ -192,8 +187,15 @@ class MervisWatcher:
                         raw_ticker = raw_data[0]
                         ticker = raw_ticker[4:] if len(raw_ticker) > 4 else raw_ticker
                         price = float(raw_data[11]) 
-                        change_rate = float(raw_data[14]) 
+                        change_rate = float(raw_data[14])
+                        # 거래량 파싱 (미국주식 체결통보 기준 인덱스 확인 필요, 통상 13~15 인근)
+                        # KIS 해외주식 체결가 TR: 11=현재가, 14=등락률, 13=체결량(틱), 12=누적거래량
+                        volume = float(raw_data[12]) 
+
+                        # 1. State 모듈에 실시간 가격 전송 (동적 캔들용)
+                        mervis_state.update_realtime_price(ticker, price, change_rate, volume)
                         
+                        # 2. 알림 조건 확인
                         self.check_user_alert(ticker, price, change_rate)
                     
         except Exception as e:

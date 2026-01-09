@@ -7,7 +7,6 @@ import holidays
 import pytz 
 from logging.handlers import RotatingFileHandler
 
-# 사용자 모듈
 import kis_scan
 import mervis_brain
 import mervis_ai
@@ -15,16 +14,18 @@ import mervis_state
 import mervis_profile
 import mervis_bigquery
 import update_volume_tier
-import kis_websocket
+import kis_websocket 
 import kis_account
 import notification
-import mervis_examiner # [추가] 자기 복기(채점) 모듈 import
+import mervis_examiner 
 
-# [설정] 전역 변수
+# 전역 변수 및 스레드 상태 관리
 is_scheduled = False
 scheduled_thread = None
 
-# [설정] 로깅 시스템 초기화
+analysis_thread = None
+is_analyzing = False
+
 def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
@@ -38,10 +39,7 @@ def setup_logging():
     logger.addHandler(file_handler)
 
 def check_market_open_time():
-    """
-    뉴욕 현지 시간을 기준으로 장 시작 여부를 판단 (서머타임 자동 적용)
-    Return: (status_code, message, seconds_to_wait)
-    """
+    # 뉴욕 현지 시간 기준 장 시작 여부 판단
     tz_ny = pytz.timezone('America/New_York')
     now_ny = datetime.datetime.now(tz_ny) 
     
@@ -67,6 +65,60 @@ def check_market_open_time():
         
     return 2, "장 마감", 0
 
+def job_realtime_analysis():
+    # 백그라운드 실시간 전략 분석 루프
+    global is_analyzing
+    logging.info("[Analysis Thread] 실시간 전략 분석 스레드 시작")
+    
+    while is_analyzing:
+        try:
+            # 현재 감시 중인 종목 리스트 조회
+            active_tickers = mervis_state.get_all_realtime_tickers()
+            
+            if active_tickers:
+                for ticker in active_tickers:
+                    if not is_analyzing: break
+
+                    # 실시간 데이터 스냅샷 조회
+                    rt_data = mervis_state.get_realtime_data(ticker)
+                    if not rt_data: continue
+
+                    item = {"code": ticker, "price": rt_data['price']}
+                    
+                    # Brain 분석 실행
+                    result = mervis_brain.analyze_stock(item)
+                    
+                    report = result.get('report', '')
+                    current_p = rt_data['price']
+                    
+                    if "매수추천" in report or "매수 권고" in report:
+                        title = f"[매수 신호] {ticker}"
+                        msg = f"현재가: ${current_p}\n{report[:200]}..."
+                        notification.send_alert(title, msg, color='blue')
+                        logging.info(f"[SIGNAL] {ticker} 매수 신호 발생 (${current_p})")
+            
+            # 분석 주기 1분
+            for _ in range(60): 
+                if not is_analyzing: break
+                time.sleep(1)
+                
+        except Exception as e:
+            logging.error(f"[Analysis Thread Error] {e}")
+            time.sleep(5)
+
+    logging.info("[Analysis Thread] 실시간 전략 분석 스레드 종료")
+
+def start_analysis_thread():
+    global analysis_thread, is_analyzing
+    if is_analyzing: return
+    is_analyzing = True
+    analysis_thread = threading.Thread(target=job_realtime_analysis, daemon=True)
+    analysis_thread.start()
+
+def stop_analysis_thread():
+    global is_analyzing
+    is_analyzing = False
+
 def scheduled_market_watcher(targets):
     global is_scheduled
     is_scheduled = True
@@ -75,7 +127,7 @@ def scheduled_market_watcher(targets):
     wait_min = int(wait_sec // 60)
     
     logging.info(f"Scheduled monitoring started. Waiting {wait_min} minutes.")
-    notification.send_alert("예약 설정됨", f"미 증시 개장(NY 09:30)까지 {wait_min}분 남았습니다. 대기 모드로 진입합니다.")
+    notification.send_alert("예약 설정됨", f"미 증시 개장까지 {wait_min}분 남았습니다. 대기 모드로 진입합니다.")
     
     while wait_sec > 0:
         if not is_scheduled:
@@ -86,9 +138,13 @@ def scheduled_market_watcher(targets):
         wait_sec -= sleep_time
     
     if is_scheduled:
-        notification.send_alert("장 시작", "🔔 미 증시가 개장했습니다! 실시간 감시를 시작합니다.")
-        print("\n [System] 예약된 실시간 감시가 시작되었습니다!")
+        notification.send_alert("장 시작", "미 증시 개장. 실시간 감시를 시작합니다.")
+        print("\n [System] 예약된 실시간 감시가 시작되었습니다.")
+        
+        # 감시 및 분석 시작
         kis_websocket.start_background_monitoring(targets)
+        start_analysis_thread()
+        
         is_scheduled = False
 
 def system_init():
@@ -122,7 +178,7 @@ def run_system():
     
     system_init()
     
-    # [추가] 부팅 시 지난밤 매매 복기(채점) 수행
+    # 부팅 시 복기 수행
     try:
         mervis_examiner.run_examination()
     except Exception as e:
@@ -136,7 +192,7 @@ def run_system():
     mervis_state.set_mode(choice)
     mode_name = "실전(REAL)" if mervis_state.is_real() else "모의(MOCK)"
     print(f"\n [System] {mode_name} 모드로 시작합니다.")
-    notification.send_alert("모드 설정", f"시스템이 **{mode_name}** 모드로 설정되었습니다.")
+    notification.send_alert("모드 설정", f"시스템이 {mode_name} 모드로 설정되었습니다.")
 
     print(f" [Process] 자산 현황 동기화 중 ({mode_name})...")
     try:
@@ -158,6 +214,7 @@ def run_system():
         
         if ws_active:
             status_text = "가동 중 (ON)"
+            if is_analyzing: status_text += " + Brain 분석 중"
         elif is_scheduled:
             status_text = "개장 대기 중 (Reserved)"
         else:
@@ -219,6 +276,7 @@ def run_system():
 
         elif menu == '4':
             if kis_websocket.is_active(): kis_websocket.stop_monitoring()
+            stop_analysis_thread()
             is_scheduled = False
             print(" [시스템] 종료합니다.")
             sys.exit(0)
@@ -227,6 +285,7 @@ def run_system():
             if ws_active:
                 print(" [Process] 실시간 감시를 중단합니다...")
                 kis_websocket.stop_monitoring()
+                stop_analysis_thread()
                 notification.send_alert("감시 중단", "실시간 감시가 중단되었습니다.", color="red")
             
             elif is_scheduled:
@@ -247,6 +306,7 @@ def run_system():
                     c = input(" >> 그래도 강제로 켜시겠습니까? (y/n): ")
                     if c.lower() == 'y':
                         kis_websocket.start_background_monitoring(targets)
+                        start_analysis_thread()
                         print(" [알림] 강제 실행되었습니다.")
                 
                 elif status == 1: 
@@ -258,6 +318,8 @@ def run_system():
                 else: 
                     print(" [Process] 장 운영 시간입니다. 즉시 감시를 시작합니다.")
                     kis_websocket.start_background_monitoring(targets)
+                    start_analysis_thread()
+                    
                     notification.send_alert("감시 시작", f"실시간 감시를 시작합니다. 대상: {len(targets)}개")
 
         else:
