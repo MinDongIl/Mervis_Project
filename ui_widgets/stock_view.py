@@ -1,4 +1,6 @@
 import sys
+import json
+import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, 
     QHeaderView, QAbstractItemView, QLineEdit, QMessageBox, QCompleter, QPushButton
@@ -7,6 +9,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from PyQt6.QtGui import QColor
 
 import mervis_bigquery
+import kis_chart
 
 class UniverseLoader(QThread):
     loaded = pyqtSignal(list)
@@ -18,7 +21,7 @@ class UniverseLoader(QThread):
 class StockListWidget(QWidget):
     request_chart_switch = pyqtSignal(str) 
     request_subscribe = pyqtSignal(str)
-    request_unsubscribe = pyqtSignal(str) # [신규] 구독 취소 시그널 추가
+    request_unsubscribe = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -31,6 +34,8 @@ class StockListWidget(QWidget):
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("데이터 로딩 중...") 
         self.search_bar.setEnabled(False)
+        self.search_bar.returnPressed.connect(self.on_enter_pressed) # 엔터키 연결
+        
         self.search_bar.setStyleSheet("""
             QLineEdit {
                 background-color: white;
@@ -50,7 +55,7 @@ class StockListWidget(QWidget):
         """)
         self.layout.addWidget(self.search_bar)
 
-        # 2. 관심 종목 테이블 (삭제 버튼 열 추가로 컬럼 수 4개)
+        # 2. 관심 종목 테이블
         self.stock_table = QTableWidget()
         self.stock_table.setColumnCount(4)
         self.stock_table.setHorizontalHeaderLabels(["종목명", "현재가", "등락률", "삭제"])
@@ -78,16 +83,20 @@ class StockListWidget(QWidget):
                 padding: 5px;
             }
         """)
-        # 컬럼 너비 설정
+        
         self.stock_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.stock_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.stock_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.stock_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed) # 삭제 버튼 고정폭
-        self.stock_table.setColumnWidth(3, 80) # 폭 80px
+        self.stock_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.stock_table.setColumnWidth(3, 80)
 
         self.layout.addWidget(self.stock_table)
 
         self.saved_tickers = []
+        self.data_file = "watched_tickers.json"
+        
+        # 저장된 종목 로드
+        self.load_saved_tickers()
         
         # 백그라운드 로딩 시작
         self.loader = UniverseLoader()
@@ -109,24 +118,22 @@ class StockListWidget(QWidget):
         self.search_bar.setEnabled(True)
         self.search_bar.setPlaceholderText(f"종목 ID로 검색 (총 {len(ticker_list)}개 로드됨)")
 
+    def on_enter_pressed(self):
+        text = self.search_bar.text().strip().upper()
+        if not text: return
+        self.process_add_ticker(text)
+
     def on_ticker_selected(self, text):
-        ticker = text.upper()
-        
+        self.process_add_ticker(text.upper())
+
+    def process_add_ticker(self, ticker):
         if ticker in self.saved_tickers:
             QMessageBox.information(self, "알림", f"'{ticker}' 종목은 이미 목록에 있습니다.")
             self.search_bar.clear()
             return
-
-        reply = QMessageBox.question(
-            self, 
-            "종목 추가", 
-            f"'{ticker}' 종목을 관심 목록에 추가하시겠습니까?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
-            self.add_stock_to_list(ticker)
-            
+        
+        # 검색바 엔터/선택 시 팝업 없이 바로 추가
+        self.add_stock_to_list(ticker)
         self.search_bar.clear()
 
     def add_stock_to_list(self, ticker):
@@ -134,10 +141,10 @@ class StockListWidget(QWidget):
         self.stock_table.insertRow(row)
         
         self.stock_table.setItem(row, 0, QTableWidgetItem(ticker))
-        self.stock_table.setItem(row, 1, QTableWidgetItem("-"))
+        self.stock_table.setItem(row, 1, QTableWidgetItem("..."))
         self.stock_table.setItem(row, 2, QTableWidgetItem("-"))
         
-        # 삭제 버튼 추가
+        # 삭제 버튼
         del_btn = QPushButton("X")
         del_btn.setStyleSheet("""
             QPushButton {
@@ -150,64 +157,97 @@ class StockListWidget(QWidget):
                 background-color: #C0392B;
             }
         """)
-        # 버튼 클릭 시 해당 종목 삭제 함수 호출 (람다로 ticker 전달)
         del_btn.clicked.connect(lambda _, t=ticker: self.delete_stock(t))
         self.stock_table.setCellWidget(row, 3, del_btn)
         
-        self.saved_tickers.append(ticker)
+        if ticker not in self.saved_tickers:
+            self.saved_tickers.append(ticker)
+            self.save_tickers_to_file()
 
-        print(f" [UI] '{ticker}' 실시간 구독 요청 전송")
+        # 초기 데이터 즉시 조회
+        self.fetch_initial_price(ticker, row)
+
         self.request_subscribe.emit(ticker)
 
+    def fetch_initial_price(self, ticker, row):
+        # 웹소켓 대기 시간 해소를 위해 API로 1회 조회
+        try:
+            data = kis_chart.get_daily_chart(ticker)
+            if data:
+                last_candle = data[-1]
+                price = float(last_candle.get('clos') or last_candle.get('last') or 0)
+                
+                rate = 0.0
+                if len(data) >= 2:
+                    prev = float(data[-2].get('clos') or data[-2].get('last') or 0)
+                    if prev > 0:
+                        rate = ((price - prev) / prev) * 100
+                
+                self.stock_table.setItem(row, 1, QTableWidgetItem(f"${price:.2f}"))
+                
+                rate_item = QTableWidgetItem(f"{rate:+.2f}%")
+                color = QColor("red") if rate > 0 else (QColor("blue") if rate < 0 else QColor("black"))
+                rate_item.setForeground(color)
+                self.stock_table.setItem(row, 2, rate_item)
+        except:
+            pass
+
     def delete_stock(self, ticker):
-        """종목 삭제 처리"""
         reply = QMessageBox.question(
             self,
             "종목 삭제",
-            f"'{ticker}' 종목을 목록에서 삭제하시겠습니까?\n(실시간 감시도 중단됩니다)",
+            f"'{ticker}' 삭제하시겠습니까?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            # 1. 테이블에서 행 찾기
             target_row = -1
             for r in range(self.stock_table.rowCount()):
                 if self.stock_table.item(r, 0).text() == ticker:
                     target_row = r
                     break
             
-            # 2. 행 삭제 및 리스트 제거
             if target_row != -1:
                 self.stock_table.removeRow(target_row)
                 if ticker in self.saved_tickers:
                     self.saved_tickers.remove(ticker)
+                    self.save_tickers_to_file()
                 
-                # 3. 구독 취소 시그널 전송
                 self.request_unsubscribe.emit(ticker)
-                print(f" [UI] '{ticker}' 삭제 완료 및 구독 취소 요청")
+
+    def save_tickers_to_file(self):
+        try:
+            with open(self.data_file, 'w') as f:
+                json.dump(self.saved_tickers, f)
+        except Exception as e:
+            print(f"저장 실패: {e}")
+
+    def load_saved_tickers(self):
+        if not os.path.exists(self.data_file): return
+        try:
+            with open(self.data_file, 'r') as f:
+                tickers = json.load(f)
+                for t in tickers:
+                    self.add_stock_to_list(t)
+        except Exception as e:
+            print(f"로드 실패: {e}")
 
     def on_table_double_clicked(self, row, col):
-        # 삭제 버튼 컬럼(3번) 클릭 시에는 차트 전환 막기 (버튼 이벤트가 우선이지만 안전장치)
         if col == 3: return
-        
         item = self.stock_table.item(row, 0)
         if item:
             ticker = item.text()
             self.request_chart_switch.emit(ticker)
 
     def update_prices(self, ticker, price, rate):
-        target_row = -1
         for r in range(self.stock_table.rowCount()):
             if self.stock_table.item(r, 0).text() == ticker:
-                target_row = r
+                self.stock_table.setItem(r, 1, QTableWidgetItem(f"${price:.2f}"))
+                
+                rate_item = QTableWidgetItem(f"{rate:+.2f}%")
+                if rate > 0: rate_item.setForeground(QColor("red"))
+                elif rate < 0: rate_item.setForeground(QColor("blue"))
+                else: rate_item.setForeground(QColor("black"))
+                
+                self.stock_table.setItem(r, 2, rate_item)
                 break
-        
-        if target_row != -1:
-            self.stock_table.setItem(target_row, 1, QTableWidgetItem(f"${price:.2f}"))
-            
-            rate_item = QTableWidgetItem(f"{rate:+.2f}%")
-            if rate > 0: rate_item.setForeground(QColor("red"))
-            elif rate < 0: rate_item.setForeground(QColor("blue"))
-            else: rate_item.setForeground(QColor("black"))
-            
-            self.stock_table.setItem(target_row, 2, rate_item)
