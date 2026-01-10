@@ -5,7 +5,7 @@ import os
 import glob
 import datetime
 import time
-import numpy as np # [신규] 프랙탈 마킹용
+import numpy as np
 
 CHART_DIR = "charts"
 if not os.path.exists(CHART_DIR):
