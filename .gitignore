@@ -1,4 +1,13 @@
 # --- Mervis Generated Data ---
+
+# 아이콘
+mervis.ico
+
+# 실행파일 관련
+Mervis_Pro.spec
+dist/
+build/
+
 # 머비스 기억 장치 (분석 리포트 저장소)
 mervis_history.json
 

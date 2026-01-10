@@ -1,14 +1,17 @@
 import sys
 import time
 import pandas as pd
+
+# PyQt6 관련 모듈 전부 포함
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFrame, QPushButton,
-    QStackedWidget, QLabel, QMessageBox, QInputDialog
+    QStackedWidget, QLabel, QMessageBox, QInputDialog, 
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QColor
 
-# 모듈 임포트
+# 사용자 정의 모듈
 import mervis_state
 import mervis_bigquery
 import kis_chart
@@ -16,7 +19,6 @@ import kis_websocket
 import kis_account
 import notification
 
-# UI 위젯 임포트
 from ui_widgets.chart_view import RealTimeChartWidget
 from ui_widgets.chat_view import MervisChatWindow
 from ui_widgets.stock_view import StockListWidget
@@ -118,64 +120,142 @@ class AssetWidget(QWidget):
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(50, 50, 50, 50)
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
         
+        # 1. 타이틀
         title = QLabel("내 자산 현황")
-        title.setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 20px; color: #2C3E50;")
+        title.setStyleSheet("font-size: 24px; font-weight: bold; color: #2C3E50;")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title)
 
-        self.info_label = QLabel("데이터 로딩 중...")
-        self.info_label.setStyleSheet("""
-            background-color: white; 
-            border: 2px solid #BDC3C7; 
-            border-radius: 10px; 
-            padding: 20px;
-            font-size: 16px; 
-            line-height: 1.6;
+        # 2. 요약 정보 패널 (카드 형태)
+        self.summary_frame = QFrame()
+        self.summary_frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #BDC3C7;
+                border-radius: 10px;
+            }
+            QLabel {
+                font-size: 16px;
+                padding: 5px;
+            }
         """)
-        self.info_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self.info_label)
+        summary_layout = QVBoxLayout(self.summary_frame)
+        self.lbl_total = QLabel("총 자산: -")
+        self.lbl_cash = QLabel("예수금: -")
+        self.lbl_stock = QLabel("주식 평가금: -")
+        self.lbl_pnl = QLabel("총 수익률: -")
         
+        # 폰트 스타일링
+        font_bold = QFont()
+        font_bold.setBold(True)
+        self.lbl_total.setFont(font_bold)
+        
+        summary_layout.addWidget(self.lbl_total)
+        summary_layout.addWidget(self.lbl_cash)
+        summary_layout.addWidget(self.lbl_stock)
+        summary_layout.addWidget(self.lbl_pnl)
+        
+        layout.addWidget(self.summary_frame)
+
+        # 3. 보유 종목 리스트 (테이블)
+        self.holding_table = QTableWidget()
+        self.holding_table.setColumnCount(5)
+        self.holding_table.setHorizontalHeaderLabels(["종목", "수량", "평가금($)", "수익률", "손익($)"])
+        self.holding_table.verticalHeader().setVisible(False)
+        self.holding_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.holding_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.holding_table.setAlternatingRowColors(True)
+        
+        # 스타일링
+        self.holding_table.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                gridline-color: #ECF0F1;
+                border: 1px solid #BDC3C7;
+            }
+            QHeaderView::section {
+                background-color: #34495E;
+                color: white;
+                padding: 8px;
+                border: none;
+                font-weight: bold;
+            }
+        """)
+        self.holding_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.holding_table)
+        
+        # 4. 새로고침 버튼
         btn_layout = QHBoxLayout()
         refresh_btn = QPushButton("새로고침")
         refresh_btn.setFixedSize(120, 40)
-        refresh_btn.setStyleSheet("background-color: #3498DB; color: white; font-weight: bold; border-radius: 5px;")
+        refresh_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498DB; 
+                color: white; 
+                font-weight: bold; 
+                border-radius: 5px;
+            }
+            QPushButton:hover { background-color: #2980B9; }
+        """)
         refresh_btn.clicked.connect(self.load_asset_data)
         btn_layout.addWidget(refresh_btn)
+        btn_layout.addStretch() # 버튼 왼쪽 정렬
         
         layout.addLayout(btn_layout)
-        layout.addStretch()
         
+        # 초기 로딩
         self.load_asset_data()
 
     def load_asset_data(self):
         try:
             asset = kis_account.get_my_total_assets()
             if not asset:
-                self.info_label.setText("자산 정보를 불러올 수 없습니다.")
+                self.lbl_total.setText("자산 정보 로드 실패")
                 return
 
+            # 요약 정보 갱신
             total = asset.get('total', 0)
             cash = asset.get('cash', 0)
             stock = asset.get('stock', 0)
             pnl = asset.get('pnl', 0.0)
             
+            self.lbl_total.setText(f"총 자산: ${total:,.2f}")
+            self.lbl_cash.setText(f"예수금: ${cash:,.2f}")
+            self.lbl_stock.setText(f"주식 평가금: ${stock:,.2f}")
+            
             pnl_color = "red" if pnl > 0 else "blue" if pnl < 0 else "black"
+            self.lbl_pnl.setText(f"총 수익률: <span style='color:{pnl_color}'>{pnl:+.2f}%</span>")
+
+            # 테이블 갱신
+            holdings = asset.get('holdings', [])
+            self.holding_table.setRowCount(0) # 초기화
             
-            html_text = f"""
-            <h3>총 자산 평가액: ${total:,.2f}</h3>
-            <hr>
-            <ul>
-                <li><b>보유 현금:</b> ${cash:,.2f}</li>
-                <li><b>주식 평가금:</b> ${stock:,.2f}</li>
-                <li><b>금일 수익률:</b> <span style='color:{pnl_color}; font-weight:bold;'>{pnl:.2f}%</span></li>
-            </ul>
-            """
-            self.info_label.setText(html_text)
-            
+            for h in holdings:
+                row = self.holding_table.rowCount()
+                self.holding_table.insertRow(row)
+                
+                # 종목, 수량, 평가금, 수익률, 손익
+                self.holding_table.setItem(row, 0, QTableWidgetItem(str(h['code'])))
+                self.holding_table.setItem(row, 1, QTableWidgetItem(f"{h['qty']:,}"))
+                self.holding_table.setItem(row, 2, QTableWidgetItem(f"${h['val']:,.2f}"))
+                
+                pnl_rate = h['pnl']
+                rate_item = QTableWidgetItem(f"{pnl_rate:+.2f}%")
+                if pnl_rate > 0: rate_item.setForeground(QColor("red"))
+                elif pnl_rate < 0: rate_item.setForeground(QColor("blue"))
+                self.holding_table.setItem(row, 3, rate_item)
+                
+                pnl_amt = h['pnl_amt']
+                amt_item = QTableWidgetItem(f"${pnl_amt:,.2f}")
+                if pnl_amt > 0: amt_item.setForeground(QColor("red"))
+                elif pnl_amt < 0: amt_item.setForeground(QColor("blue"))
+                self.holding_table.setItem(row, 4, amt_item)
+
         except Exception as e:
-            self.info_label.setText(f"데이터 로드 오류: {e}")
+            self.lbl_total.setText(f"오류: {e}")
 
 class MervisMainWindow(QMainWindow):
     def __init__(self):
