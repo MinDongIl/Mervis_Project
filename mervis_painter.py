@@ -5,6 +5,7 @@ import os
 import glob
 import datetime
 import time
+import numpy as np # [신규] 프랙탈 마킹용
 
 CHART_DIR = "charts"
 if not os.path.exists(CHART_DIR):
@@ -46,15 +47,51 @@ def draw_chart(ticker, daily_data, highlight_indicators=[]):
     # [전략별 동적 시각화]
     # ---------------------------------------------------------
 
-    # A. [추세선/50일선 전략]
-    if 'Trend' in highlight_indicators or 'MA50' in highlight_indicators:
-        df['MA50'] = ta.sma(df['Close'], length=50)
-        add_plots.append(mpf.make_addplot(df['MA50'], color='blue', width=2.5, panel=0))
-        
-        df['MA20'] = ta.sma(df['Close'], length=20)
-        add_plots.append(mpf.make_addplot(df['MA20'], color='orange', width=0.8, panel=0))
+    # A. [기본 지표: 이동평균선 5종] (항상 표시하거나 옵션으로)
+    # 5, 20, 50, 100, 200일선
+    # 색상: 5(검정), 20(노랑), 50(파랑), 100(초록), 200(빨강)
+    ma_settings = [
+        (5, 'black', 1.0),
+        (20, 'orange', 1.0),
+        (50, 'blue', 1.0),
+        (100, 'green', 1.0),
+        (200, 'red', 1.0)
+    ]
+    
+    for length, color, width in ma_settings:
+        ma_col = f'MA{length}'
+        df[ma_col] = ta.sma(df['Close'], length=length)
+        # 데이터가 충분치 않아 NaN인 경우 제외
+        if not df[ma_col].isnull().all():
+            add_plots.append(mpf.make_addplot(df[ma_col], color=color, width=width, panel=0))
 
-    # B. [일목균형표 전략]
+    # B. [신규] 윌리엄스 프랙탈 (Fractal)
+    # 조건에 맞으면 마커 표시 (Up: 파랑 역삼각형 / Down: 빨강 정삼각형)
+    if len(df) >= 5:
+        # Up Fractal (고점, 매도 시그널)
+        is_up = (df['High'] > df['High'].shift(1)) & \
+                (df['High'] > df['High'].shift(2)) & \
+                (df['High'] > df['High'].shift(-1)) & \
+                (df['High'] > df['High'].shift(-2))
+        
+        # Down Fractal (저점, 매수 시그널)
+        is_down = (df['Low'] < df['Low'].shift(1)) & \
+                  (df['Low'] < df['Low'].shift(2)) & \
+                  (df['Low'] < df['Low'].shift(-1)) & \
+                  (df['Low'] < df['Low'].shift(-2))
+
+        # 시각화용 데이터 (캔들보다 약간 위/아래에 찍히도록)
+        up_marker = df['High'] * 1.01
+        up_marker = up_marker.where(is_up, np.nan)
+        
+        down_marker = df['Low'] * 0.99
+        down_marker = down_marker.where(is_down, np.nan)
+        
+        # addplot 추가 (markersize 조절 가능)
+        add_plots.append(mpf.make_addplot(up_marker, type='scatter', markersize=50, marker='v', color='blue', panel=0))
+        add_plots.append(mpf.make_addplot(down_marker, type='scatter', markersize=50, marker='^', color='red', panel=0))
+
+    # C. [일목균형표 전략]
     if 'Ichimoku' in highlight_indicators:
         try:
             ichimoku_df, _ = ta.ichimoku(df['High'], df['Low'], df['Close'])
@@ -67,7 +104,7 @@ def draw_chart(ticker, daily_data, highlight_indicators=[]):
         except:
             pass
 
-    # C. [볼린저 밴드]
+    # D. [볼린저 밴드]
     if 'Bollinger' in highlight_indicators:
         bb = ta.bbands(df['Close'], length=20, std=2)
         if bb is not None:
@@ -76,7 +113,7 @@ def draw_chart(ticker, daily_data, highlight_indicators=[]):
             add_plots.append(mpf.make_addplot(df['BBU'], panel=0, color='green', linestyle=':', width=1.0))
             add_plots.append(mpf.make_addplot(df['BBL'], panel=0, color='green', linestyle=':', width=1.0))
 
-    # D. [RSI / 다이버전스]
+    # E. [RSI / 다이버전스]
     if 'RSI' in highlight_indicators or 'Divergence' in highlight_indicators:
         df['RSI'] = ta.rsi(df['Close'], length=14)
         add_plots.append(mpf.make_addplot(df['RSI'], panel=panel_count, color='black', ylabel='RSI'))
@@ -89,7 +126,7 @@ def draw_chart(ticker, daily_data, highlight_indicators=[]):
         add_plots.append(mpf.make_addplot(rsi_sell, panel=panel_count, type='scatter', markersize=50, marker='v', color='blue'))
         panel_count += 1
 
-    # E. [MACD]
+    # F. [MACD]
     if 'MACD' in highlight_indicators:
         macd = ta.macd(df['Close'])
         if macd is not None:
