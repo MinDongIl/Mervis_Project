@@ -65,7 +65,7 @@ def draw_chart(ticker, daily_data, highlight_indicators=[]):
         if not df[ma_col].isnull().all():
             add_plots.append(mpf.make_addplot(df[ma_col], color=color, width=width, panel=0))
 
-    # B. [신규] 윌리엄스 프랙탈 (Fractal)
+    # B. 윌리엄스 프랙탈 (Fractal)
     # 조건에 맞으면 마커 표시 (Up: 파랑 역삼각형 / Down: 빨강 정삼각형)
     if len(df) >= 5:
         # Up Fractal (고점, 매도 시그널)
