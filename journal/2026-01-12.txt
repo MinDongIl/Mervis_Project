@@ -1,0 +1,35 @@
+[연구 일지] 2026-01-12
+
+1. 주요 내용
+GUI 실시간 차트 데이터 동기화 안정화, 지표 연산 로직의 모듈화(Modularization) 완료 및 차트 시각화 고도화(범례, 거래량 포맷팅).
+
+2. 진행 요약
+종목 리스트와 차트 간의 가격 불일치 문제를 근본적으로 해결하고, 자산 현황 파싱 로직을 강화하여 시스템 신뢰도를 회복함. 특히 UI 위젯(chart_view.py)에 혼재되어 있던 지표 연산 로직을 modules/technical.py로 완전히 이관하여 MVC 패턴에 가까운 모듈화를 달성함. 또한, 차트의 가독성을 높이기 위해 이동평균선 범례와 거래량 축 단위를 포맷팅하여 전문 트레이딩 툴 수준의 시각화를 구현함.
+
+3. 주요 수정 및 개발 내용
+실시간 데이터 동기화(Synchronization): main_gui.py와 stock_view.py에서 비동기 데이터 로딩 시 발생하던 Race Condition(경쟁 상태)을 방지하기 위해, 차트 로딩 시점에는 최신 API 데이터를 우선순위로 두도록 로직 변경. 데이터프레임의 날짜 정렬(sort_index)을 강제하여 항상 최신 캔들이 표시되도록 수정.
+모듈화 및 리팩토링: ui_widgets/chart_view.py는 오직 '그리기(Rendering)'에만 집중하도록 경량화하고, 이동평균선/프랙탈/볼린저밴드 등의 계산 로직은 modules/technical.py 내 process_chart_data 함수로 통합 관리. 향후 지표 추가 시 UI 수정 없이 모듈만 확장하면 되는 구조 확립.
+
+차트 시각화 고도화:
+범례(Legend): matplotlib.lines.Line2D를 활용한 Proxy Artist 기법으로 차트 좌측 상단에 이동평균선 범례 표시.
+거래량 포맷팅: FuncFormatter를 적용하여 거래량 Y축을 단순 숫자가 아닌 K(천), M(백만) 단위로 변환하여 가독성 확보.
+계좌 연동 강화: kis_account.py의 파싱 로직을 개선하여 API 응답 내 다양한 키 값(ovrs_pdno, pdno 등)과 자료형(문자열/실수) 변동에 유연하게 대처하도록 수정.
+
+4. 시행 착오 및 오류 해결
+[가격 불일치 현상]
+증상: 종목 리스트엔 $121, 차트엔 $345가 표시되는 문제.
+원인: API 데이터가 역순 정렬되어 있거나, mervis_state의 과거 잔존 데이터가 최신 로딩 데이터를 덮어쓰는 로직 오류.
+해결: 데이터 로드 시 sort_index로 날짜 오름차순 정렬을 강제하고, 차트 로딩 직후에는 API 데이터를 신뢰하도록 흐름 제어 수정.
+
+[Volume 컬럼 누락 오류]
+증상: Column 'Volume' NOT FOUND 오류로 차트 렌더링 실패.
+원인: API마다 거래량 키값(acml_vol, vol, tvol)이 제각각이라 매핑 실패.
+해결: technical.py 전처리 단계에서 모든 거래량 관련 키를 표준 Volume으로 통일하고, 결측 시 0으로 채우는 안전장치(Failsafe) 마련.
+
+[Matplotlib 축 호환성 오류]
+증상: make_addplot 사용 시 panel 인자를 썼을 때 ax 객체 요구 오류 발생.
+해결: 외부 축(External Axes) 모드 사용 시 panel 인덱스 대신 생성된 ax 객체를 직접 전달하도록 코드 수정.
+
+5. 다음 목표
+보조지표 설정 화면(IndicatorView) 구현: 사용자가 체크박스로 원하는 지표(MA, Fractal, Bollinger 등)를 선택하고 파라미터를 조정할 수 있는 UI 개발.
+설정 화면(SettingsView) 구현: 시스템 전역 설정 관리 UI 개발.
