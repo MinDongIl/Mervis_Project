@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QColor
 
-# 사용자 정의 모듈
 import mervis_state
 import mervis_bigquery
 import kis_chart
@@ -24,76 +23,57 @@ import mervis_ai
 from ui_widgets.chart_view import RealTimeChartWidget
 from ui_widgets.chat_view import MervisChatWindow
 from ui_widgets.stock_view import StockListWidget
-# from ui_widgets.indicator_view import IndicatorSettingsWidget (추후 적용)
 
-# --- 사용자 설정 위젯 ---
 class UserConfigWidget(QWidget):
     def __init__(self):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(50, 50, 50, 50)
-        
         title = QLabel("사용자 매매 설정 (MY)")
         title.setStyleSheet("font-size: 24px; font-weight: bold; color: #2C3E50; margin-bottom: 20px;")
         layout.addWidget(title)
-
-        # 설정 폼
+        
         form_group = QGroupBox("기본 매매 목표 설정")
         form_group.setStyleSheet("font-size: 14px; font-weight: bold;")
         form_layout = QFormLayout()
         form_layout.setSpacing(15)
-
-        self.input_profit = QLineEdit()
-        self.input_profit.setPlaceholderText("예: 5.0 (5% 수익 시 익절)")
-        self.input_loss = QLineEdit()
-        self.input_loss.setPlaceholderText("예: -3.0 (3% 손실 시 손절)")
         
+        self.input_profit = QLineEdit()
+        self.input_profit.setPlaceholderText("예: 5.0")
+        self.input_loss = QLineEdit()
+        self.input_loss.setPlaceholderText("예: -3.0")
         self.combo_tendency = QComboBox()
         self.combo_tendency.addItems(["공격형 (Scalping)", "중립형 (Swing)", "방어형 (Value Investing)"])
 
-        form_layout.addRow("익절 목표 수익률 (%):", self.input_profit)
-        form_layout.addRow("손절 제한 수익률 (%):", self.input_loss)
+        form_layout.addRow("익절 목표 (%):", self.input_profit)
+        form_layout.addRow("손절 제한 (%):", self.input_loss)
         form_layout.addRow("투자 성향:", self.combo_tendency)
-        
         form_group.setLayout(form_layout)
         layout.addWidget(form_group)
-
-        # 저장 버튼
+        
         save_btn = QPushButton("설정 저장")
         save_btn.setFixedHeight(45)
         save_btn.setStyleSheet("background-color: #27AE60; color: white; font-weight: bold; font-size: 14px; border-radius: 5px;")
         save_btn.clicked.connect(self.save_config)
         layout.addWidget(save_btn)
-        
         layout.addStretch()
 
     def save_config(self):
-        p = self.input_profit.text()
-        l = self.input_loss.text()
-        t = self.combo_tendency.currentText()
-        QMessageBox.information(self, "저장 완료", f"설정이 저장되었습니다.\n\n익절: {p}%\n손절: {l}%\n성향: {t}")
+        QMessageBox.information(self, "저장 완료", "설정이 저장되었습니다.")
 
-# --- 시스템 초기화 워커 ---
 class SystemInitWorker(QThread):
     progress_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
 
     def run(self):
         try:
-            self.progress_signal.emit("데이터베이스 상태 점검 중...")
-            is_fresh = mervis_bigquery.check_db_freshness()
-            
-            if not is_fresh:
-                self.progress_signal.emit("거래량 데이터 업데이트 진행 중... (시간 소요)")
+            self.progress_signal.emit("데이터베이스 점검 중...")
+            if not mervis_bigquery.check_db_freshness():
+                self.progress_signal.emit("데이터 갱신 중...")
                 update_volume_tier.update_volume_data()
-                self.progress_signal.emit("데이터베이스 업데이트 완료.")
-            else:
-                self.progress_signal.emit("데이터베이스가 최신입니다.")
-
-            self.progress_signal.emit("매매 복기(Learning) 시스템 실행 중...")
+            self.progress_signal.emit("매매 복기 중...")
             mervis_examiner.run_examination()
-            
-            self.progress_signal.emit("자산 현황 서버 기록 중...")
+            self.progress_signal.emit("자산 기록 중...")
             my_asset = kis_account.get_my_total_assets()
             if my_asset:
                 mervis_bigquery.save_daily_balance(
@@ -102,13 +82,10 @@ class SystemInitWorker(QThread):
                     stock_val=my_asset['stock'],
                     pnl_daily=my_asset['pnl']
                 )
-
-            self.finished_signal.emit(True, "시스템 초기화 및 학습 완료.")
-
+            self.finished_signal.emit(True, "초기화 완료")
         except Exception as e:
-            self.finished_signal.emit(False, f"초기화 중 오류 발생: {str(e)}")
+            self.finished_signal.emit(False, str(e))
 
-# --- 차트 로더 ---
 class ChartLoader(QThread):
     data_loaded = pyqtSignal(object, object, float)
     error_occurred = pyqtSignal(str)
@@ -121,88 +98,91 @@ class ChartLoader(QThread):
         try:
             raw_data = kis_chart.get_daily_chart(self.ticker)
             if not raw_data:
-                self.error_occurred.emit(f"{self.ticker} 데이터 로드 실패")
+                self.error_occurred.emit(f"{self.ticker} 데이터 없음")
                 return
 
             df = pd.DataFrame(raw_data)
-            rename_map = {'clos': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low', 'vol': 'Volume', 'date': 'Date'}
+            
+            # painter 코드와 동일한 컬럼 매핑 (Volume 확실하게 처리)
+            rename_map = {
+                'clos': 'Close', 'last': 'Close',
+                'open': 'Open', 
+                'high': 'High', 
+                'low': 'Low', 
+                'acml_vol': 'Volume', 'vol': 'Volume', 'tvol': 'Volume',
+                'xymd': 'Date', 'date': 'Date'
+            }
             df.rename(columns=rename_map, inplace=True)
 
+            # Volume 결측치 처리 (0으로 채움)
+            if 'Volume' not in df.columns: df['Volume'] = 0
+            
+            # 숫자형 변환
             cols = ['Open', 'High', 'Low', 'Close', 'Volume']
             for c in cols:
-                if c in df.columns: df[c] = pd.to_numeric(df[c], errors='coerce')
+                if c in df.columns: 
+                    df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
             
+            # 날짜 인덱스 설정 및 정렬
             if 'Date' in df.columns:
                 df['Date'] = pd.to_datetime(df['Date'], format='%Y%m%d', errors='coerce')
                 df.set_index('Date', inplace=True)
-                df.sort_index(inplace=True)
+                df.index.name = 'Date' 
+                df.sort_index(inplace=True) # 오름차순 (과거->현재)
+            else:
+                self.error_occurred.emit("날짜 데이터(Date) 없음")
+                return
 
+            # 등락률 계산 (마지막 vs 그 전날)
             change_rate = 0.0
             if len(df) >= 2:
-                prev_close = df['Close'].iloc[-2]
-                curr_close = df['Close'].iloc[-1]
-                if prev_close > 0:
-                    change_rate = ((curr_close - prev_close) / prev_close) * 100
+                prev = df['Close'].iloc[-2]
+                curr = df['Close'].iloc[-1]
+                if prev > 0:
+                    change_rate = ((curr - prev) / prev) * 100
 
             self.data_loaded.emit(self.ticker, df, change_rate)
 
         except Exception as e:
-            self.error_occurred.emit(f"차트 처리 오류: {str(e)}")
+            self.error_occurred.emit(f"차트 오류: {str(e)}")
 
-# --- 웹소켓 워커 ---
 class WebSocketWorker(QThread):
     price_updated = pyqtSignal(str, float, float, float)
-
     def __init__(self):
         super().__init__()
         self.is_running = True
-
     def run(self):
         while self.is_running:
             try:
-                active_tickers = mervis_state.get_all_realtime_tickers()
-                for ticker in active_tickers:
+                active = mervis_state.get_all_realtime_tickers()
+                for ticker in active:
                     data = mervis_state.get_realtime_data(ticker)
-                    if not data: continue
-                    
-                    price = data.get('price', 0.0)
-                    change = data.get('change', 0.0)
-                    volume = data.get('volume', 0.0)
-                    
-                    self.price_updated.emit(ticker, price, change, volume)
+                    if data:
+                        self.price_updated.emit(ticker, data.get('price', 0.0), data.get('change', 0.0), data.get('volume', 0.0))
                 time.sleep(0.5)
-            except Exception as e:
-                time.sleep(1)
+            except: time.sleep(1)
+    def stop(self): self.is_running = False
 
-    def stop(self):
-        self.is_running = False
-
-# --- 채팅 처리 워커 ---
 class ChatWorker(QThread):
     response_received = pyqtSignal(str)
-
     def __init__(self, ai_engine, user_text):
         super().__init__()
         self.ai_engine = ai_engine
         self.user_text = user_text
-
     def run(self):
         try:
-            response = self.ai_engine.get_response(self.user_text)
-            self.response_received.emit(response)
+            resp = self.ai_engine.get_response(self.user_text)
+            self.response_received.emit(resp)
         except Exception as e:
-            self.response_received.emit(f"오류가 발생했습니다: {str(e)}")
+            self.response_received.emit(f"Error: {e}")
 
 class EmptyWidget(QWidget):
     def __init__(self, text):
         super().__init__()
-        layout = QVBoxLayout(self)
-        label = QLabel(text)
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet("font-size: 20px; color: gray; font-weight: bold;")
-        layout.addWidget(label)
+        l = QLabel(text)
+        l.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout = QVBoxLayout(self); layout.addWidget(l)
 
-# --- 자산 위젯 ---
 class AssetWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -217,41 +197,27 @@ class AssetWidget(QWidget):
 
         self.summary_frame = QFrame()
         self.summary_frame.setStyleSheet("QFrame { background-color: white; border: 1px solid #BDC3C7; border-radius: 10px; } QLabel { font-size: 16px; padding: 5px; }")
-        summary_layout = QVBoxLayout(self.summary_frame)
-        self.lbl_total = QLabel("총 자산: -")
-        self.lbl_cash = QLabel("예수금: -")
-        self.lbl_stock = QLabel("주식 평가금: -")
-        self.lbl_pnl = QLabel("총 수익률: -")
-        
-        font_bold = QFont(); font_bold.setBold(True)
-        self.lbl_total.setFont(font_bold)
-        
-        summary_layout.addWidget(self.lbl_total)
-        summary_layout.addWidget(self.lbl_cash)
-        summary_layout.addWidget(self.lbl_stock)
-        summary_layout.addWidget(self.lbl_pnl)
-        
+        sl = QVBoxLayout(self.summary_frame)
+        self.lbl_total = QLabel("-"); sl.addWidget(self.lbl_total)
+        self.lbl_cash = QLabel("-"); sl.addWidget(self.lbl_cash)
+        self.lbl_stock = QLabel("-"); sl.addWidget(self.lbl_stock)
+        self.lbl_pnl = QLabel("-"); sl.addWidget(self.lbl_pnl)
         layout.addWidget(self.summary_frame)
 
         self.holding_table = QTableWidget()
         self.holding_table.setColumnCount(5)
         self.holding_table.setHorizontalHeaderLabels(["종목", "수량", "평가금($)", "수익률", "손익($)"])
         self.holding_table.verticalHeader().setVisible(False)
-        self.holding_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.holding_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.holding_table.setAlternatingRowColors(True)
         self.holding_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.holding_table.setStyleSheet("QTableWidget { background-color: white; gridline-color: #ECF0F1; border: 1px solid #BDC3C7; } QHeaderView::section { background-color: #34495E; color: white; padding: 8px; border: none; font-weight: bold; }")
         layout.addWidget(self.holding_table)
         
-        btn_layout = QHBoxLayout()
-        refresh_btn = QPushButton("새로고침")
-        refresh_btn.setFixedSize(120, 40)
-        refresh_btn.setStyleSheet("QPushButton { background-color: #3498DB; color: white; font-weight: bold; border-radius: 5px; } QPushButton:hover { background-color: #2980B9; }")
-        refresh_btn.clicked.connect(self.load_asset_data)
-        btn_layout.addWidget(refresh_btn)
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+        btn = QPushButton("새로고침")
+        btn.setFixedSize(120, 40)
+        btn.setStyleSheet("QPushButton { background-color: #3498DB; color: white; font-weight: bold; border-radius: 5px; }")
+        btn.clicked.connect(self.load_asset_data)
+        bl = QHBoxLayout(); bl.addWidget(btn); bl.addStretch()
+        layout.addLayout(bl)
         
         self.load_asset_data()
 
@@ -259,20 +225,17 @@ class AssetWidget(QWidget):
         try:
             asset = kis_account.get_my_total_assets()
             if not asset:
-                self.lbl_total.setText("자산 정보 로드 실패 (연결 확인 필요)")
+                self.lbl_total.setText("자산 정보 로드 실패")
                 return
 
             total = asset.get('total', 0)
-            cash = asset.get('cash', 0)
-            stock = asset.get('stock', 0)
             pnl = asset.get('pnl', 0.0)
-            
             self.lbl_total.setText(f"총 자산: ${total:,.2f}")
-            self.lbl_cash.setText(f"예수금: ${cash:,.2f}")
-            self.lbl_stock.setText(f"주식 평가금: ${stock:,.2f}")
+            self.lbl_cash.setText(f"예수금: ${asset.get('cash', 0):,.2f}")
+            self.lbl_stock.setText(f"주식 평가금: ${asset.get('stock', 0):,.2f}")
             
-            pnl_color = "red" if pnl > 0 else "blue" if pnl < 0 else "black"
-            self.lbl_pnl.setText(f"총 수익률: <span style='color:{pnl_color}'>{pnl:+.2f}%</span>")
+            color = "red" if pnl > 0 else "blue" if pnl < 0 else "black"
+            self.lbl_pnl.setText(f"총 수익률: <span style='color:{color}'>{pnl:+.2f}%</span>")
 
             holdings = asset.get('holdings', [])
             self.holding_table.setRowCount(0)
@@ -284,16 +247,12 @@ class AssetWidget(QWidget):
                 self.holding_table.setItem(row, 1, QTableWidgetItem(f"{h['qty']:,}"))
                 self.holding_table.setItem(row, 2, QTableWidgetItem(f"${h['val']:,.2f}"))
                 
-                pnl_rate = h['pnl']
-                rate_item = QTableWidgetItem(f"{pnl_rate:+.2f}%")
-                if pnl_rate > 0: rate_item.setForeground(QColor("red"))
-                elif pnl_rate < 0: rate_item.setForeground(QColor("blue"))
+                rate_item = QTableWidgetItem(f"{h['pnl']:+.2f}%")
+                rate_item.setForeground(QColor("red") if h['pnl'] > 0 else QColor("blue") if h['pnl'] < 0 else QColor("black"))
                 self.holding_table.setItem(row, 3, rate_item)
                 
-                pnl_amt = h['pnl_amt']
-                amt_item = QTableWidgetItem(f"${pnl_amt:,.2f}")
-                if pnl_amt > 0: amt_item.setForeground(QColor("red"))
-                elif pnl_amt < 0: amt_item.setForeground(QColor("blue"))
+                amt_item = QTableWidgetItem(f"${h['pnl_amt']:,.2f}")
+                amt_item.setForeground(QColor("red") if h['pnl_amt'] > 0 else QColor("blue") if h['pnl_amt'] < 0 else QColor("black"))
                 self.holding_table.setItem(row, 4, amt_item)
         except Exception as e:
             self.lbl_total.setText(f"오류: {e}")
@@ -305,10 +264,11 @@ class MervisMainWindow(QMainWindow):
         self.setGeometry(100, 100, 1300, 800)
         self.setStyleSheet("background-color: #F0F8FF;")
 
-        # AI 엔진 및 워커 초기화
         self.ai_engine = mervis_ai.MervisAI_Engine()
         self.chat_worker = None
         self.chat_window = None
+        
+        self.current_selected_ticker = None
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -316,7 +276,6 @@ class MervisMainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 상단 메뉴바
         self.create_top_menu(main_layout)
 
         self.status_bar = QLabel(" 시스템 대기 중...")
@@ -326,51 +285,50 @@ class MervisMainWindow(QMainWindow):
         self.content_stack = QStackedWidget()
         main_layout.addWidget(self.content_stack)
 
-        # 0: 관심 종목
         self.stock_view = StockListWidget()
         self.content_stack.addWidget(self.stock_view)
         
-        # 1: 차트
         self.chart_view = RealTimeChartWidget()
         self.content_stack.addWidget(self.chart_view)
 
-        # 2: 자산
         self.asset_view = AssetWidget()
         self.content_stack.addWidget(self.asset_view)
 
-        # 3: 보조지표
         self.indicator_view = EmptyWidget("보조지표 설정 (준비 중)")
         self.content_stack.addWidget(self.indicator_view)
 
-        # 4: 설정
         self.settings_view = EmptyWidget("시스템 설정 (준비 중)")
         self.content_stack.addWidget(self.settings_view)
 
-        # 5: 사용자 설정
         self.user_config_view = UserConfigWidget()
         self.content_stack.addWidget(self.user_config_view)
         
         self.content_stack.setCurrentIndex(0)
 
-        # 시그널 연결
         self.stock_view.request_chart_switch.connect(self.switch_to_chart_mode)
         self.stock_view.request_subscribe.connect(self.subscribe_ticker_from_list)
         self.stock_view.request_unsubscribe.connect(self.unsubscribe_ticker)
 
-        # 웹소켓 워커
         self.ws_worker = WebSocketWorker()
         self.ws_worker.price_updated.connect(self.on_realtime_data_received)
         self.ws_worker.start()
 
-        # 초기화 시작
         self.start_system_initialization()
 
     def create_top_menu(self, layout):
         menu_frame = QFrame()
         menu_frame.setFixedHeight(50)
+        # 메뉴바
         menu_frame.setStyleSheet("""
             QFrame { background-color: #2C3E50; border-bottom: 2px solid #34495E; }
-            QPushButton { background-color: transparent; color: #ECF0F1; font-size: 14px; font-weight: bold; border: none; padding: 10px 20px; }
+            QPushButton { 
+                background-color: transparent; 
+                color: #ECF0F1; 
+                font-size: 14px; 
+                font-weight: bold; 
+                border: none; 
+                padding: 10px 20px; 
+            }
             QPushButton:hover { background-color: #34495E; color: #3498DB; }
             QPushButton:checked { color: #3498DB; border-bottom: 2px solid #3498DB; }
             #chat_btn { background-color: #27AE60; border-radius: 5px; margin: 5px; }
@@ -387,20 +345,15 @@ class MervisMainWindow(QMainWindow):
         btn_asset = QPushButton("자산")
         btn_indi = QPushButton("보조지표")
         btn_conf = QPushButton("설정")
-        btn_user = QPushButton("MY") # 사용자 메뉴
+        btn_user = QPushButton("MY") 
 
-        # 버튼 연결 (화면 전환 시 데이터 갱신 로직 포함)
         btn_stock.clicked.connect(lambda: self.content_stack.setCurrentIndex(0))
         btn_chart.clicked.connect(lambda: self.content_stack.setCurrentIndex(1))
-        
-        # 자산 탭 클릭 시 자동 새로고침 연결
         btn_asset.clicked.connect(self.switch_to_asset_view)
-        
         btn_indi.clicked.connect(lambda: self.content_stack.setCurrentIndex(3))
         btn_conf.clicked.connect(lambda: self.content_stack.setCurrentIndex(4))
         btn_user.clicked.connect(lambda: self.content_stack.setCurrentIndex(5))
 
-        # 채팅 버튼 (우측 정렬)
         btn_chat = QPushButton("채팅")
         btn_chat.setObjectName("chat_btn")
         btn_chat.clicked.connect(self.toggle_chat_window)
@@ -412,7 +365,7 @@ class MervisMainWindow(QMainWindow):
         menu_layout.addWidget(btn_conf)
         menu_layout.addWidget(btn_user)
         
-        menu_layout.addStretch() # 중간 여백
+        menu_layout.addStretch() 
         menu_layout.addWidget(btn_chat)
 
         layout.addWidget(menu_frame)
@@ -475,14 +428,22 @@ class MervisMainWindow(QMainWindow):
     def switch_to_chart_mode(self, ticker):
         self.content_stack.setCurrentIndex(1) 
         self.status_bar.setText(f" [Data] '{ticker}' 차트 데이터 로딩 중...")
+        
+        self.current_selected_ticker = ticker
+        
         self.chart_loader = ChartLoader(ticker)
         self.chart_loader.data_loaded.connect(self.on_chart_loaded)
         self.chart_loader.error_occurred.connect(self.on_chart_error)
         self.chart_loader.start()
+        
         kis_websocket.add_watch_condition(ticker, 0, "MONITOR", "CHART_VIEW")
 
     def on_chart_loaded(self, ticker, df, change_rate):
+        if ticker != self.current_selected_ticker: return
+
         self.status_bar.setText(f" [Data] '{ticker}' 차트 로드 완료.")
+        
+        # 무조건 Chart 데이터(API)를 신뢰하여 로드
         self.chart_view.load_data(ticker, df, change_rate)
 
     def on_chart_error(self, msg):

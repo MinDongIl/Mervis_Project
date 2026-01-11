@@ -14,14 +14,14 @@ def _get_api_config():
         app_secret = secret.APP_SECRET_REAL
         cano = getattr(secret, 'CANO_REAL', getattr(secret, 'CANO', ''))
         prdt = getattr(secret, 'ACNT_PRDT_CD_REAL', getattr(secret, 'ACNT_PRDT_CD', ''))
-        tr_id_balance = "CTRP6504R"
+        tr_id_balance = "CTRP6504R" # 해외주식 잔고 (실전)
     else:
         base_url = secret.URL_MOCK
         app_key = secret.APP_KEY_MOCK
         app_secret = secret.APP_SECRET_MOCK
         cano = getattr(secret, 'CANO_MOCK', '')
         prdt = getattr(secret, 'ACNT_PRDT_CD_MOCK', '')
-        tr_id_balance = "VTRP6504R"
+        tr_id_balance = "VTRP6504R" # 해외주식 잔고 (모의)
 
     if isinstance(cano, str): cano = cano.strip()
     if isinstance(prdt, str): prdt = prdt.strip()
@@ -58,8 +58,8 @@ def get_my_total_assets():
     params = {
         "CANO": config['cano'],
         "ACNT_PRDT_CD": config['prdt'],
-        "WCRC_FRCR_DVSN_CD": "01", # 외화 기준
-        "NATN_CD": "840",         # 미국
+        "WCRC_FRCR_DVSN_CD": "01", # 01: 외화, 02: 원화 환산
+        "NATN_CD": "840",         # 840: 미국
         "TR_MKET_CD": "00",
         "INQR_DVSN_CD": "00",
         "CTX_AREA_FK": "",
@@ -73,7 +73,7 @@ def get_my_total_assets():
         res = requests.get(url, headers=headers, params=params, timeout=5)
         data = res.json()
 
-        if data['rt_cd'] != '0':
+        if data.get('rt_cd') != '0':
             msg = data.get('msg1', 'Unknown Error')
             print(f" -> [Account Error] {msg}")
             return None
@@ -84,8 +84,9 @@ def get_my_total_assets():
         
         if isinstance(currencies, list):
             for cur in currencies:
+                # crcy_cd: 통화코드 (USD)
                 if cur.get('crcy_cd') == 'USD':
-                    usd_deposit = float(cur.get('frcr_dncl_amt_2', 0))
+                    usd_deposit = float(cur.get('frcr_dncl_amt_2', 0)) # 외화예수금
                     break
         
         # 2. 보유 주식 상세 파싱 (output1)
@@ -97,18 +98,21 @@ def get_my_total_assets():
 
         if isinstance(holdings, list):
             for stock in holdings:
-                # 잔고 수량 확인 (ovrs_cblc_qty: 해외잔고수량)
-                qty = float(stock.get('ovrs_cblc_qty', 0))
+                # ovrs_pdno: 해외상품번호(티커), ovrs_cblc_qty: 해외잔고수량
+                ticker = stock.get('ovrs_pdno', stock.get('pdno', 'UNKNOWN'))
+                qty_str = stock.get('ovrs_cblc_qty', stock.get('cblc_qty', '0'))
+                qty = float(qty_str)
                 
-                # 수량이 0 이하라면(전량 매도 등) 리스트에서 제외
+                # 수량이 0.0001 이상인 경우만 보유로 인정
                 if qty <= 0:
                     continue
 
-                ticker = stock.get('ovrs_pdno', 'UNKNOWN') # 종목코드
-                # frcr_evlu_amt2: 외화평가금액 (달러)
+                # frcr_evlu_amt2: 외화평가금액2 (달러)
                 eval_amt = float(stock.get('frcr_evlu_amt2', 0)) 
+                
                 # frcr_evlu_pfls_amt: 외화평가손익금액 (달러)
                 pnl_amt = float(stock.get('frcr_evlu_pfls_amt', 0))
+                
                 # evlu_pfls_rt: 평가손익율 (%)
                 pnl_rate = float(stock.get('evlu_pfls_rt', 0))
                 
@@ -126,33 +130,22 @@ def get_my_total_assets():
         # 3. 총 자산 및 수익률 계산
         total_asset = usd_deposit + stock_val_total
         
-        # 보유 종목 전체 수익률 계산
-        # (총 평가손익 / (총 평가금액 - 총 평가손익)) * 100 = (손익 / 원금) * 100
+        # 전체 포트폴리오 수익률 재계산
         total_stock_pnl_rate = 0.0
         if stock_val_total > 0:
             invested_principal = stock_val_total - total_pnl_amt
             if invested_principal > 0:
                 total_stock_pnl_rate = (total_pnl_amt / invested_principal) * 100
 
-        # [출력] 상세 현황 로그
-        print("\n [계좌 상세 현황]")
-        print(f" - 현금(USD): ${usd_deposit:,.2f}")
-        print(f" - 주식(USD): ${stock_val_total:,.2f}")
-        
-        if holding_list:
-            print(" - [보유 종목]")
-            for h in holding_list:
-                print(f"   * {h['code']}: {int(h['qty'])}주 | 평가 ${h['val']:,.2f} | 수익 {h['pnl']}% (${h['pnl_amt']:.2f})")
-        else:
-            print(" - [보유 종목] 없음")
-        print("="*30)
+        # [디버그 로그]
+        print(f"\n [계좌] USD예수금: ${usd_deposit:.2f} | 주식평가: ${stock_val_total:.2f} | 종목수: {len(holding_list)}")
 
         return {
             "total": round(total_asset, 2),
             "cash": round(usd_deposit, 2), 
             "stock": round(stock_val_total, 2),
             "pnl": round(total_stock_pnl_rate, 2),
-            "holdings": holding_list, # 보유 종목 리스트도 반환
+            "holdings": holding_list, 
             "currency": "USD"
         }
 
@@ -161,11 +154,7 @@ def get_my_total_assets():
         return None
 
 def get_stock_qty(ticker):
-    """
-    특정 종목의 보유 수량을 반환하는 함수
-    """
     try:
-        # 자산 전체를 조회해서 해당 종목을 찾음 (API 호출 최소화 필요 시 캐싱 고려)
         assets = get_my_total_assets()
         if assets and 'holdings' in assets:
             for h in assets['holdings']:
