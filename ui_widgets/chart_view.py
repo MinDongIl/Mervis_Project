@@ -1,87 +1,53 @@
-import pandas as pd
-import mplfinance as mpf
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QTextEdit, QLineEdit
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtGui import QTextCursor
 
-class RealTimeChartWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        
-        self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        
-        # 상단 정보 표시 라벨
-        self.info_label = QLabel("종목을 선택해주세요.")
-        self.info_label.setStyleSheet("background-color: #34495E; color: white; font-weight: bold; font-size: 12pt; padding: 5px;")
-        self.layout.addWidget(self.info_label)
+class MervisChatWindow(QWidget):
+    message_sent = pyqtSignal(str) 
 
-        # 캔버스 설정
-        self.fig = Figure(figsize=(10, 6), dpi=100)
-        self.canvas = FigureCanvas(self.fig)
-        self.ax = self.fig.add_subplot(111)
-        self.fig.patch.set_facecolor('#F0F8FF')
-        
-        self.layout.addWidget(self.canvas)
-        
-        # 차트 스타일 설정
-        self.mc = mpf.make_marketcolors(up='red', down='blue', inherit=True)
-        self.style = mpf.make_mpf_style(marketcolors=self.mc, gridstyle=':', y_on_right=True)
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Mervis Chat")
+        self.setGeometry(1450, 100, 400, 600)
+        self.setStyleSheet("background-color: #F0F8FF;")
 
-        self.df = None
-        self.current_ticker = None
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
 
-    def load_data(self, ticker, df, change_rate=0.0):
-        """
-        메인에서 받아온 DataFrame과 등락률로 차트 그리기
-        change_rate 인자 추가됨
-        """
-        self.current_ticker = ticker
-        self.df = df
-        
-        # DataFrame 전처리 (mplfinance 형식 맞춤)
-        self.df.columns = [c.capitalize() for c in self.df.columns]
-        self.df.index.name = 'Date'
-        
-        # 정보 갱신 (등락률 색상 적용)
-        last_price = self.df['Close'].iloc[-1]
-        
-        color_code = "#FF0000" if change_rate > 0 else "#0000FF" if change_rate < 0 else "#FFFFFF"
-        self.info_label.setText(f"종목: {ticker} | 현재가: ${last_price:,.2f} | <span style='color:{color_code}'>등락률: {change_rate:+.2f}%</span>")
-        
-        self.update_plot()
+        title = QLabel("Talk with Mervis")
+        title.setStyleSheet("font-weight: bold; font-size: 12pt; color: #2C3E50; margin-bottom: 5px;")
+        layout.addWidget(title)
 
-    def update_plot(self):
-        if self.df is None or self.df.empty:
-            return
+        self.chat_log = QTextEdit()
+        self.chat_log.setReadOnly(True)
+        self.chat_log.setStyleSheet("background-color: white; border: 1px solid #BDC3C7; font-family: 'Malgun Gothic'; font-size: 10pt;")
+        layout.addWidget(self.chat_log)
 
-        self.ax.clear()
-        
-        # 차트 그리기
-        mpf.plot(
-            self.df, 
-            type='candle', 
-            style=self.style, 
-            ax=self.ax, 
-            volume=False,
-            warn_too_much_data=10000
-        )
-        self.canvas.draw()
+        self.input_field = QLineEdit()
+        self.input_field.setStyleSheet("background-color: white; padding: 8px; border: 1px solid #BDC3C7;")
+        self.input_field.returnPressed.connect(self.send_message)
+        layout.addWidget(self.input_field)
 
-    def update_realtime_price(self, price):
-        """
-        웹소켓 실시간 가격 수신 시 마지막 봉 업데이트
-        """
-        if self.df is None or self.df.empty:
-            return
+        self.setLayout(layout)
 
-        last_idx = self.df.index[-1]
+    def send_message(self):
+        text = self.input_field.text()
+        if not text: return
         
-        current_h = self.df.at[last_idx, 'High']
-        current_l = self.df.at[last_idx, 'Low']
+        self.append_user_message(text)
+        self.input_field.clear()
         
-        self.df.at[last_idx, 'Close'] = price
-        self.df.at[last_idx, 'High'] = max(current_h, price)
-        self.df.at[last_idx, 'Low'] = min(current_l, price)
-        
-        self.update_plot()
+        self.message_sent.emit(text)
+
+    def append_user_message(self, text):
+        self.chat_log.append(f"<div style='margin: 5px;'><b style='color:#2980B9;'>User:</b> {text}</div>")
+        self.scroll_to_bottom()
+
+    def append_bot_message(self, text):
+        self.chat_log.append(f"<div style='margin: 5px; background-color:#ECF0F1; padding:5px; border-radius:5px;'><b style='color:#E67E22;'>Mervis:</b> {text}</div>")
+        self.scroll_to_bottom()
+
+    def scroll_to_bottom(self):
+        cursor = self.chat_log.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.chat_log.setTextCursor(cursor)
