@@ -37,7 +37,7 @@ class RealTimeChartWidget(QWidget):
             'ma_periods': [5, 20, 50, 100, 200],
             'fractal': True,
             'bollinger': False,
-            'alligator': True # [신규] 엘리게이터 활성화
+            'alligator': True
         }
 
     def load_data(self, ticker, df, change_rate=0.0):
@@ -94,7 +94,7 @@ class RealTimeChartWidget(QWidget):
                 add_plots.append(mpf.make_addplot(self.df[col], color=color, width=0.8, ax=ax1))
                 legend_handles.append(Line2D([0], [0], color=color, linewidth=1.5, label=f'MA {d}'))
 
-        # B. 엘리게이터 (Alligator) [신규 추가]
+        # B. 엘리게이터 (Alligator)
         # Jaw(Blue), Teeth(Red), Lips(Green)
         if 'Alligator_Jaw' in self.df.columns:
             add_plots.append(mpf.make_addplot(self.df['Alligator_Jaw'], color='blue', width=1.5, ax=ax1))

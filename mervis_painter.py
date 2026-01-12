@@ -36,8 +36,8 @@ def draw_chart(ticker, daily_data, highlight_indicators=[]):
     df['Date'] = pd.to_datetime(df['Date'], format='%Y%m%d')
     df = df.set_index('Date').sort_index()
     
-    # 최근 150일 데이터
-    df = df.tail(150)
+    # 최근 200일 데이터
+    df = df.tail(200)
 
     # 3. AddPlots 리스트 준비
     add_plots = []

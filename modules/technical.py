@@ -11,7 +11,7 @@ def process_chart_data(df, settings=None):
     if df is None or df.empty:
         return df
 
-    # 1. 컬럼명 표준화 (mplfinance 호환)
+    # 1. 컬럼명 표준화 (mplfinance 호환: Capitalized)
     rename_map = {
         'close': 'Close', 'clos': 'Close', 'last': 'Close',
         'open': 'Open',
@@ -21,6 +21,7 @@ def process_chart_data(df, settings=None):
         'date': 'Date', 'xymd': 'Date'
     }
     df.rename(columns=rename_map, inplace=True)
+    # 이미 대문자거나 섞여있을 경우를 대비해 확실하게 변환
     df.columns = [c.capitalize() if c.lower() in ['close', 'open', 'high', 'low', 'volume', 'date'] else c for c in df.columns]
 
     if 'Volume' not in df.columns:
@@ -44,19 +45,17 @@ def process_chart_data(df, settings=None):
 
     # B. 윌리엄스 프랙탈 (Standard 5-Bar)
     try:
-        # Up Fractal (고점): N > N-1, N > N-2, N > N+1, N > N+2
+        # GUI용은 이미 컬럼이 'High', 'Low'로 표준화되어 있으므로 바로 접근
         is_up = (df['High'] > df['High'].shift(1)) & \
                 (df['High'] > df['High'].shift(2)) & \
                 (df['High'] > df['High'].shift(-1)) & \
                 (df['High'] > df['High'].shift(-2))
         
-        # Down Fractal (저점): N < N-1, N < N-2, N < N+1, N < N+2
         is_down = (df['Low'] < df['Low'].shift(1)) & \
                   (df['Low'] < df['Low'].shift(2)) & \
                   (df['Low'] < df['Low'].shift(-1)) & \
                   (df['Low'] < df['Low'].shift(-2))
 
-        # 차트 시각화용 오프셋 적용
         df['Fractal_Up'] = df['High'] * 1.01
         df['Fractal_Up'] = df['Fractal_Up'].where(is_up, np.nan)
         
@@ -73,27 +72,19 @@ def process_chart_data(df, settings=None):
             df['BBU'] = bb[bb.columns[2]]
     except: pass
 
-    # D. 엘리게이터 (Bill Williams Alligator) - 정밀 구현
-    # 공식: Median Price -> SMMA (RMA) -> Shift
+    # D. 엘리게이터 (Alligator) - 정밀 구현 (SMMA + Shift)
     try:
-        # 1. Median Price ((H+L)/2)
         mp = (df['High'] + df['Low']) / 2
         
-        # 2. SMMA (Wilder's Smoothing) 계산
-        # pandas_ta의 rma가 SMMA와 수학적으로 동일합니다.
-        jaw_smma = ta.rma(mp, length=13)
-        teeth_smma = ta.rma(mp, length=8)
-        lips_smma = ta.rma(mp, length=5)
+        # rma = SMMA (Wilder's Smoothing)
+        jaw = ta.rma(mp, length=13)
+        teeth = ta.rma(mp, length=8)
+        lips = ta.rma(mp, length=5)
         
-        # 3. Future Shift (미래로 밀기)
-        # Jaw(13, 8), Teeth(8, 5), Lips(5, 3)
-        df['Alligator_Jaw'] = jaw_smma.shift(8)    # Blue
-        df['Alligator_Teeth'] = teeth_smma.shift(5) # Red
-        df['Alligator_Lips'] = lips_smma.shift(3)   # Green
-        
-    except Exception as e:
-        # 데이터 부족 등으로 계산 실패 시 패스
-        pass
+        df['Alligator_Jaw'] = jaw.shift(8)    # Blue
+        df['Alligator_Teeth'] = teeth.shift(5) # Red
+        df['Alligator_Lips'] = lips.shift(3)   # Green
+    except: pass
 
     return df
 
@@ -102,6 +93,7 @@ def process_chart_data(df, settings=None):
 def prepare_data(daily_data):
     if not daily_data: return None
     df = pd.DataFrame(daily_data)
+    # CLI 분석용은 소문자로 통일
     rename_map = {'clos': 'close', 'open': 'open', 'high': 'high', 'low': 'low', 'tvol': 'volume', 'xymd': 'date'}
     df = df.rename(columns=rename_map)
     cols = ['close', 'open', 'high', 'low', 'volume']
@@ -114,27 +106,34 @@ def prepare_data(daily_data):
     else: return None
     return df
 
-# --- [개별 지표 계산 함수들] ---
+# --- [개별 지표 계산 함수들 - 안전한 컬럼 접근] ---
+
+def get_col(df, candidates):
+    """DataFrame에서 대소문자 상관없이 존재하는 컬럼명을 찾아 반환"""
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return candidates[-1] # fallback (보통 에러남)
 
 def calc_ma(df, length):
-    target = 'Close' if 'Close' in df.columns else 'close'
+    target = get_col(df, ['Close', 'close'])
     return ta.sma(df[target], length=length)
 
 def calc_rsi(df, length=14):
-    target = 'Close' if 'Close' in df.columns else 'close'
+    target = get_col(df, ['Close', 'close'])
     return ta.rsi(df[target], length=length)
 
 def calc_vwap(df):
     try:
-        h = df['High'] if 'High' in df.columns else 'high'
-        l = df['Low'] if 'Low' in df.columns else 'low'
-        c = df['Close'] if 'Close' in df.columns else 'close'
-        v = df['Volume'] if 'Volume' in df.columns else 'volume'
+        h = get_col(df, ['High', 'high'])
+        l = get_col(df, ['Low', 'low'])
+        c = get_col(df, ['Close', 'close'])
+        v = get_col(df, ['Volume', 'volume'])
         return ta.vwap(df[h], df[l], df[c], df[v])
     except: return None
 
 def calc_bollinger(df, length=20, std=2):
-    target = 'Close' if 'Close' in df.columns else 'close'
+    target = get_col(df, ['Close', 'close'])
     return ta.bbands(df[target], length=length, std=std)
 
 def calc_williams_fractal(df):
@@ -143,10 +142,15 @@ def calc_williams_fractal(df):
     """
     if len(df) < 5: return None, None
 
-    h = df['High'] if 'High' in df.columns else 'high'
-    l = df['Low'] if 'Low' in df.columns else 'low'
+    # 안전하게 Series를 가져옴 (String Error 방지)
+    col_h = get_col(df, ['High', 'high'])
+    col_l = get_col(df, ['Low', 'low'])
+    
+    h = df[col_h] # Series
+    l = df[col_l] # Series
 
     # 5봉 기준 로직 (N은 중앙)
+    # shift()는 Series 메서드이므로 h, l이 Series여야 함
     is_up = (h > h.shift(1)) & (h > h.shift(2)) & (h > h.shift(-1)) & (h > h.shift(-2))
     is_down = (l < l.shift(1)) & (l < l.shift(2)) & (l < l.shift(-1)) & (l < l.shift(-2))
 
@@ -172,7 +176,7 @@ def check_ma_cross_strategy(df):
 
 def check_volume_spike(df, threshold=2.0):
     if len(df) < 2: return False
-    target_vol = 'Volume' if 'Volume' in df.columns else 'volume'
+    target_vol = get_col(df, ['Volume', 'volume'])
     curr_vol = df[target_vol].iloc[-1]
     prev_vol = df[target_vol].iloc[-2]
     if prev_vol > 0 and curr_vol >= prev_vol * threshold: return True
@@ -189,7 +193,7 @@ def check_rsi_strategy(df):
 def check_vwap_trend(df):
     vwap = calc_vwap(df)
     if vwap is None: return False
-    target_close = 'Close' if 'Close' in df.columns else 'close'
+    target_close = get_col(df, ['Close', 'close'])
     curr_price = df[target_close].iloc[-1]
     curr_vwap = vwap.iloc[-1]
     if curr_price > curr_vwap: return True
@@ -204,9 +208,13 @@ def analyze_technical_signals(daily_data, active_strategies=[]):
 
     signals = []
     
+    # 요약용 기본 가격 정보
+    target_close = get_col(df, ['Close', 'close'])
+    target_vol = get_col(df, ['Volume', 'volume'])
+    
     summary_data = {
-        "price": df['close'].iloc[-1],
-        "volume": df['volume'].iloc[-1],
+        "price": df[target_close].iloc[-1],
+        "volume": df[target_vol].iloc[-1],
         "indicators": {}
     }
 
@@ -236,7 +244,7 @@ def analyze_technical_signals(daily_data, active_strategies=[]):
         if 'vwap' in active_strategies and check_vwap_trend(df): 
             signals.append("Price_Above_VWAP")
         
-        # [프랙탈 시그널 확인]
+        # [프랙탈 시그널 확인] (5봉 기준: 2일 전 확정)
         if up_frac is not None and len(up_frac) > 3:
             if not np.isnan(up_frac.iloc[-3]):
                 signals.append("Fractal_Sell_Signal")
