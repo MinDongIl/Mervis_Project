@@ -43,7 +43,6 @@ def process_chart_data(df, settings=None):
         except: pass
 
     # B. 윌리엄스 프랙탈 (Standard 5-Bar)
-    # 좌측 2개, 우측 2개를 비교하는 표준 방식
     try:
         # Up Fractal (고점): N > N-1, N > N-2, N > N+1, N > N+2
         is_up = (df['High'] > df['High'].shift(1)) & \
@@ -73,6 +72,28 @@ def process_chart_data(df, settings=None):
             df['BBM'] = bb[bb.columns[1]]
             df['BBU'] = bb[bb.columns[2]]
     except: pass
+
+    # D. 엘리게이터 (Bill Williams Alligator) - 정밀 구현
+    # 공식: Median Price -> SMMA (RMA) -> Shift
+    try:
+        # 1. Median Price ((H+L)/2)
+        mp = (df['High'] + df['Low']) / 2
+        
+        # 2. SMMA (Wilder's Smoothing) 계산
+        # pandas_ta의 rma가 SMMA와 수학적으로 동일합니다.
+        jaw_smma = ta.rma(mp, length=13)
+        teeth_smma = ta.rma(mp, length=8)
+        lips_smma = ta.rma(mp, length=5)
+        
+        # 3. Future Shift (미래로 밀기)
+        # Jaw(13, 8), Teeth(8, 5), Lips(5, 3)
+        df['Alligator_Jaw'] = jaw_smma.shift(8)    # Blue
+        df['Alligator_Teeth'] = teeth_smma.shift(5) # Red
+        df['Alligator_Lips'] = lips_smma.shift(3)   # Green
+        
+    except Exception as e:
+        # 데이터 부족 등으로 계산 실패 시 패스
+        pass
 
     return df
 
@@ -109,8 +130,6 @@ def calc_vwap(df):
         l = df['Low'] if 'Low' in df.columns else 'low'
         c = df['Close'] if 'Close' in df.columns else 'close'
         v = df['Volume'] if 'Volume' in df.columns else 'volume'
-        # pandas_ta vwap는 대소문자 구분을 위해 DataFrame을 직접 넘기거나 컬럼 지정 필요
-        # 여기서는 안전하게 컬럼 추출 후 numpy 연산 혹은 ta.vwap 호출
         return ta.vwap(df[h], df[l], df[c], df[v])
     except: return None
 
@@ -124,8 +143,8 @@ def calc_williams_fractal(df):
     """
     if len(df) < 5: return None, None
 
-    h = df['High'] if 'High' in df.columns else df['high']
-    l = df['Low'] if 'Low' in df.columns else df['low']
+    h = df['High'] if 'High' in df.columns else 'high'
+    l = df['Low'] if 'Low' in df.columns else 'low'
 
     # 5봉 기준 로직 (N은 중앙)
     is_up = (h > h.shift(1)) & (h > h.shift(2)) & (h > h.shift(-1)) & (h > h.shift(-2))
@@ -218,10 +237,8 @@ def analyze_technical_signals(daily_data, active_strategies=[]):
             signals.append("Price_Above_VWAP")
         
         # [프랙탈 시그널 확인]
-        # 5봉 프랙탈은 우측 2봉이 완성되어야 하므로, 
-        # 가장 최근에 확정될 수 있는 신호는 iloc[-3] (현재 봉 기준 전전날) 입니다.
         if up_frac is not None and len(up_frac) > 3:
-            if not np.isnan(up_frac.iloc[-3]): # 2일 전 고점이 프랙탈 고점이었음 (어제,오늘 봉으로 확인됨)
+            if not np.isnan(up_frac.iloc[-3]):
                 signals.append("Fractal_Sell_Signal")
             if not np.isnan(down_frac.iloc[-3]):
                 signals.append("Fractal_Buy_Signal")
