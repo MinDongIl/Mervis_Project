@@ -229,6 +229,7 @@ def save_daily_features(ticker, tech_data, fund_data, supply_data):
     schema = [
         bigquery.SchemaField("date", "DATE", mode="REQUIRED"),
         bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("price", "FLOAT", mode="NULLABLE"), # price 컬럼 추가
         
         # Technical
         bigquery.SchemaField("rsi", "FLOAT", mode="NULLABLE"),
@@ -253,8 +254,6 @@ def save_daily_features(ticker, tech_data, fund_data, supply_data):
 
     try:
         rsi = tech_data.get('rsi', 0.0)
-        
-        # VWAP Ratio
         price = tech_data.get('price', 0.0)
         vwap = tech_data.get('vwap', 0.0)
         
@@ -281,6 +280,7 @@ def save_daily_features(ticker, tech_data, fund_data, supply_data):
         rows = [{
             "date": today,
             "ticker": ticker,
+            "price": safe_float(price),
             "rsi": safe_float(rsi),
             "vwap_ratio": safe_float(vwap_ratio, 1.0),
             "ma20_ratio": safe_float(ma20_ratio, 0.0),
