@@ -520,3 +520,41 @@ def get_all_tickers_simple():
     except Exception as e:
         print(f" [DB Error] 전체 티커 로드 실패: {e}")
         return []
+    
+# --- mervis_bigquery.py 하단에 추가 ---
+
+def get_prediction(ticker):
+    """
+    [머신러닝] 빅쿼리 ARIMA 모델에게 '내일 수익률' 예측 요청
+    """
+    client = get_client()
+    if not client: return None
+
+    # 내일 날짜 (Next Business Day) 예측
+    # Horizon=1은 '다음 1개 구간(내일)'을 의미
+    query = f"""
+        SELECT
+          forecast_value as predicted_return,
+          prediction_interval_lower_bound as return_min,
+          prediction_interval_upper_bound as return_max
+        FROM
+          ML.FORECAST(MODEL `{client.project}.{DATASET_ID}.return_forecast_model`, 
+                      STRUCT(1 AS horizon, 0.9 AS confidence_level))
+        WHERE
+          ticker = '{ticker}'
+    """
+    try:
+        # 모델이 아직 없거나 학습 중일 수 있으므로 예외 처리 필수
+        results = list(client.query(query).result())
+        if results:
+            row = results[0]
+            return {
+                "predicted_return": float(row.predicted_return), # 예측 수익률 (예: 0.03 = 3%)
+                "return_min": float(row.return_min),
+                "return_max": float(row.return_max)
+            }
+    except Exception as e:
+        # 모델이 없거나 에러 발생 시 None 반환 (분석에 지장 없도록)
+        # print(f" [ML Warning] {ticker} 예측 실패: {e}") 
+        return None
+    return None

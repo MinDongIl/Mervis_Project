@@ -113,6 +113,16 @@ def get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_resu
     supply_data = analysis_results.get('supply_data', {})
     supply_conclusion = analysis_results.get('supply_conclusion', 'N/A')
 
+    # 빅쿼리 ML 예측 데이터 추출
+    bq_pred = analysis_results.get('bq_prediction')
+    ml_ctx = "No ML Prediction available."
+    if bq_pred:
+        # 소수점 4째자리까지 표시 (0.0345 -> 3.45%)
+        p_ret = bq_pred['predicted_return'] * 100
+        p_min = bq_pred['return_min'] * 100
+        p_max = bq_pred['return_max'] * 100
+        ml_ctx = f"**BigQuery AI Forecast**: Expected Return {p_ret:.2f}% (Range: {p_min:.2f}% ~ {p_max:.2f}%)"
+
     # 투자 성향별 프롬프트
     style = user_profile.get('investment_style', 'SCALPING')
     style_instruction = ""
@@ -165,7 +175,12 @@ def get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_resu
     - Short Ratio: {supply_data.get('short_ratio', 0)}
     - Hybrid Analysis Conclusion: **{supply_conclusion}**
     
-    [3. Technical Facts (Chart & Trend)]
+    [3. BigQuery ML Forecast (AI Prediction)]
+    {ml_ctx}
+    - This is a machine learning prediction based on historical price/return patterns.
+    - If Expected Return is POSITIVE (> 0%), it supports a BUY signal.
+    
+    [4. Technical Facts (Chart & Trend)]
     {tech_summary}
     
     [Chart Data]
@@ -180,7 +195,7 @@ def get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_resu
     [Instructions]
     1. **Style**: Speak to {USER_NAME} in Korean (반말). Be professional, cynical, and direct.
     2. **Anti-Hallucination**: **STOP generating immediately after your response. Do NOT simulate User interaction (e.g., "User: ...").**
-    3. **Data Usage**: You MUST explicitly mention the [Consensus Target] and [Institutional Ownership] in your comment.
+    3. **Data Usage**: You MUST explicitly mention the [Consensus Target], [Institutional Ownership], and [ML Forecast] in your comment.
     
     [Output Format]
     전략: (매수추천 / 관망 / 매도권고 / 매수대기)
@@ -193,7 +208,7 @@ def get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_resu
     코멘트:
     1. **미래 실적 및 펀더멘털**: (Analyze Consensus Target vs Current Price. Is it undervalued?)
     2. **수급 분석**: (Mention Institutional Ownership %. Is this a fake pump or real supply?)
-    3. **차트 및 추세**: (Is it an uptrend? MA alignment?)
+    3. **AI 예측 및 추세**: (Combine BigQuery Forecast with Chart Trend. Do they agree? If ML says UP but Chart says DOWN, be cautious.)
     4. **머비스의 판단**: (Final conclusion)
     """
     
@@ -205,7 +220,7 @@ def get_strategy_report(ticker, chart_set, is_open, past_memories, analysis_resu
 
 def analyze_stock(item):
     """
-    종목 분석 메인 함수 (실시간 데이터 연동)
+    종목 분석 메인 함수 (실시간 데이터 연동 및 ML 예측 포함)
     """
     ticker = item['code']
     price = item.get('price', 0)
@@ -222,7 +237,6 @@ def analyze_stock(item):
     volume_info = f"Vol: {latest_daily.get('acml_vol', 0)}"
 
     # 2. 실시간 데이터 확인 (Websocket State)
-    # 웹소켓이 돌고 있고, 해당 종목이 감시 중이라면 최신가를 가져온다.
     realtime_data = mervis_state.get_realtime_data(ticker)
     is_realtime = False
 
@@ -234,7 +248,6 @@ def analyze_stock(item):
         is_realtime = True
         print(f" [Brain] {ticker} 실시간 데이터 적용: ${price}")
     else:
-        # 실시간 데이터가 없으면 API 조회값이나 일봉 종가 사용
         if price == 0:
             p_val = latest_daily.get('clos') or latest_daily.get('last')
             if p_val: price = float(p_val)
@@ -265,12 +278,18 @@ def analyze_stock(item):
     # 기본적 분석
     fund_data, fund_err, _ = fundamental.analyze_fundamentals(ticker)
     
+    # 빅쿼리 ML 예측 조회 (Inference)
+    bq_prediction = None
+    if hasattr(mervis_bigquery, 'get_prediction'):
+        bq_prediction = mervis_bigquery.get_prediction(ticker)
+    
     # 분석 결과 종합
     analysis_results = {
         'tech_summary': tech_data.get('summary', 'N/A') if tech_data else 'N/A',
         'fund_data': fund_data if fund_data else {},
         'supply_data': supply_data if supply_data else {},
-        'supply_conclusion': supply_conclusion
+        'supply_conclusion': supply_conclusion,
+        'bq_prediction': bq_prediction  # ML 예측 결과 추가
     }
     
     chart_set = {
