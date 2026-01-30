@@ -1,0 +1,37 @@
+[연구 일지] 2026-01-30
+
+1. 주요 내용
+고비용 Windows 서버 환경 폐기 및 비용 효율적인 Linux(Ubuntu) 클라우드 서버 구축과 저사양 환경에서의 의존성 패키지 설치 최적화.
+
+2. 진행 요약
+기존 Windows Server 기반 환경의 예상 비용(월 $70 이상) 과다 문제를 해결하기 위해, GCP Free Tier 혜택 적용이 가능한 Ubuntu(Linux) 환경으로 이전을 완료함. 서버 구축 후 Git 코드를 복제하고 보안 키 파일(secret.py, service_account.json)을 이관했으나, 저사양 인스턴스(e2-micro/small)의 메모리 한계로 인해 라이브러리 설치 과정에서 시스템이 동결(Freeze)되는 현상이 발생함. 이를 해결하기 위해 설치 단계를 분할하고 캐시를 비활성화하는 최적화 전략을 적용하여 환경 구성을 완료함.
+
+3. 주요 수정 및 개발 내용
+인프라 전환 (Infrastructure Migration):
+비용 절감을 위해 Windows Server 인스턴스 삭제 후 Ubuntu 22.04 LTS 인스턴스 신규 생성 (Region: us-central1).
+타임존 설정(Asia/Seoul) 및 기본 패키지(Python3, Pip, Git) 설치 완료.
+
+환경 설정 최적화 (Environment Optimization):
+externally-managed-environment 오류 대응을 위해 Python 가상환경(venv) 구성.
+저사양 서버 메모리(1GB) 관리를 위해 대용량 라이브러리(Pandas, NumPy 등)와 일반 라이브러리를 분리하여 순차 설치하는 스크립트 적용.
+requirements.txt 파일의 누락을 확인하고 서버 CLI에서 즉시 재생성.
+
+4. 시행 착오 및 오류 해결
+[비용 효율성 문제]
+고민: Windows Server 라이선스 비용 포함 월 $71.46 청구 예상.
+해결: GUI를 포기하고 CLI 기반의 Linux(Ubuntu)로 전환하여 운영 비용을 $0~$10 수준으로 절감.
+
+[패키지 설치 동결 (Freeze)]
+증상: pip install -r requirements.txt 실행 시 서버 응답 없음(Hang) 현상 발생.
+원인: e2-micro/small 인스턴스의 적은 메모리 용량으로 인해 의존성 해결 과정에서 Swap 메모리 고갈.
+해결: pip install --no-cache-dir 옵션 사용 및 무거운 라이브러리(Numpy, Pandas) -> 구글 라이브러리 -> 기타 라이브러리 순으로 4단계 분할 설치 수행.
+
+[파이썬 환경 오류]
+증상: error: externally-managed-environment 발생.
+원인: 최신 Ubuntu 배포판의 시스템 파이썬 보호 정책.
+해결: python3 -m venv venv로 가상환경을 생성하여 격리된 환경에서 패키지 설치.
+
+5. 다음 목표
+크롤러 가동 확인: nohup을 이용한 mervis_crawler.py의 백그라운드 실행 및 로그(crawler.log) 모니터링.
+데이터 적재 검증: BigQuery daily_features 테이블에 가격(Price) 데이터가 정상적으로 쌓이는지 확인.
+ML 모델 생성: 데이터 확보 후 BigQuery ML(ARIMA) 모델 학습 쿼리 실행.
