@@ -64,9 +64,10 @@ def process_single_stock(ticker):
         supply_data, _, _ = supply.analyze_supply_structure(ticker)
         fund_data, _, _ = fundamental.analyze_fundamentals(ticker)
 
-        # 5. 결과 패키징
+        # 5. 결과 패키징 (Price 추가됨)
         return {
             "ticker": ticker,
+            "price": price,
             "tech": tech_data,
             "fund": fund_data,
             "supply": supply_data
@@ -79,8 +80,13 @@ def save_batch_features(batch_results):
     """결과 묶음 DB 저장"""
     if not batch_results: return
     for item in batch_results:
+        # mervis_bigquery.save_daily_features 함수도 price를 받도록 수정되어야 함
         mervis_bigquery.save_daily_features(
-            item['ticker'], item['tech'], item['fund'], item['supply']
+            item['ticker'], 
+            item['price'],
+            item['tech'], 
+            item['fund'], 
+            item['supply']
         )
 
 def run_fast_crawler():
@@ -90,6 +96,17 @@ def run_fast_crawler():
     
     tickers = get_all_tickers()
     if not tickers: return
+
+    
+    # 스레드 풀 시작 전에, 첫 번째 종목으로 API를 1회 동기적으로 호출
+    # 메인 스레드에서 토큰이 안전하게 생성/갱신되어 파일로 저장
+    print(" [Init] 토큰 유효성 검사 및 사전 발급 진행 중...")
+    try:
+        kis_chart.get_daily_chart(tickers[0])
+        print(" [Init] 토큰 준비 완료. 크롤링을 시작합니다.")
+    except Exception as e:
+        print(f" [Error] 토큰 초기화 실패: {e}")
+        return
 
     total = len(tickers)
     print(f" [Crawler] 총 {total}개 후보군 스캔 시작...")
@@ -125,9 +142,6 @@ def run_fast_crawler():
     except KeyboardInterrupt:
         print("\n\n [Stop] 사용자 요청으로 크롤링을 중단합니다...")
         print(" [Info] 대기 중인 작업을 취소하고 종료합니다.")
-        # executor는 with 블록을 빠져나가면서 자동으로 종료되지만, 
-        # 즉시 종료를 위해 명시적으로 호출할 수도 있습니다.
-        # (Python 3.9+ 에서는 cancel_futures=True 사용 가능)
         return
 
     # 남은 데이터 저장 (강제 종료가 아닐 때만)

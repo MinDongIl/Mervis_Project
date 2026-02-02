@@ -218,18 +218,41 @@ def safe_float(val, default=0.0):
     except:
         return default
 
-def save_daily_features(ticker, tech_data, fund_data, supply_data):
-    # ML 학습용 데이터 저장
+def ensure_daily_features_schema(client):
+    # daily_features 테이블에 price 컬럼이 없으면 자동 추가
+    table_id = f"{client.project}.{DATASET_ID}.{TABLE_FEATURES}"
+    try:
+        table = client.get_table(table_id)
+        existing_fields = {f.name for f in table.schema}
+        
+        # 추가할 컬럼 정의
+        new_columns = []
+        if "price" not in existing_fields:
+            new_columns.append(bigquery.SchemaField("price", "FLOAT", mode="NULLABLE"))
+            
+        if new_columns:
+            original_schema = table.schema
+            new_schema = original_schema[:] + new_columns
+            table.schema = new_schema
+            client.update_table(table, ["schema"])
+            # print(" [Info] daily_features 테이블에 price 컬럼이 자동 추가되었습니다.")
+    except: pass
+
+def save_daily_features(ticker, price, tech_data, fund_data, supply_data):
+    # ML 학습용 데이터 저장 (Schema Update Logic Included)
     client = get_client()
     if not client: return
     
+    # 1. 스키마 보정
+    ensure_daily_features_schema(client)
+    
     table_ref = f"{client.project}.{DATASET_ID}.{TABLE_FEATURES}"
     
-    # ML Feature Schema
+    # ML Feature Schema (참고용 - 실제 생성은 create_table이 수행)
     schema = [
         bigquery.SchemaField("date", "DATE", mode="REQUIRED"),
         bigquery.SchemaField("ticker", "STRING", mode="REQUIRED"),
-        bigquery.SchemaField("price", "FLOAT", mode="NULLABLE"), # price 컬럼 추가
+        bigquery.SchemaField("price", "FLOAT", mode="NULLABLE"),
         
         # Technical
         bigquery.SchemaField("rsi", "FLOAT", mode="NULLABLE"),
@@ -253,14 +276,15 @@ def save_daily_features(ticker, tech_data, fund_data, supply_data):
     except: pass
 
     try:
+        # 데이터 정제
+        current_price = safe_float(price)
         rsi = tech_data.get('rsi', 0.0)
-        price = tech_data.get('price', 0.0)
         vwap = tech_data.get('vwap', 0.0)
         
         if safe_float(vwap) == 0.0:
             vwap_ratio = 1.0
         else:
-            vwap_ratio = price / vwap
+            vwap_ratio = current_price / vwap
             
         ma20_ratio = tech_data.get('ma20_ratio', 0.0)
         vol_ratio = tech_data.get('vol_ratio', 0.0)
@@ -270,17 +294,17 @@ def save_daily_features(ticker, tech_data, fund_data, supply_data):
         con = fund_data.get('consensus', {}) if fund_data else {}
         target_mean = con.get('target_mean', 0.0)
         
-        if safe_float(price) == 0.0:
+        if current_price == 0.0:
             target_upside = 0.0
         else:
-            target_upside = (target_mean - price) / price if target_mean else 0.0
+            target_upside = (target_mean - current_price) / current_price if target_mean else 0.0
         
         today = datetime.now().strftime("%Y-%m-%d")
         
         rows = [{
             "date": today,
             "ticker": ticker,
-            "price": safe_float(price),
+            "price": current_price,
             "rsi": safe_float(rsi),
             "vwap_ratio": safe_float(vwap_ratio, 1.0),
             "ma20_ratio": safe_float(ma20_ratio, 0.0),
@@ -511,17 +535,13 @@ def get_all_tickers_simple():
     client = get_client()
     if not client: return []
     
-    # 정렬하여 로드
     query = f"SELECT ticker FROM `{client.project}.{DATASET_ID}.{TABLE_TICKERS}` ORDER BY ticker"
     try:
-        # 쿼리 실행 (타임아웃 설정 권장)
         results = list(client.query(query).result())
         return [row.ticker for row in results]
     except Exception as e:
         print(f" [DB Error] 전체 티커 로드 실패: {e}")
         return []
-    
-# --- mervis_bigquery.py 하단에 추가 ---
 
 def get_prediction(ticker):
     """
@@ -531,7 +551,6 @@ def get_prediction(ticker):
     if not client: return None
 
     # 내일 날짜 (Next Business Day) 예측
-    # Horizon=1은 '다음 1개 구간(내일)'을 의미
     query = f"""
         SELECT
           forecast_value as predicted_return,
@@ -544,17 +563,14 @@ def get_prediction(ticker):
           ticker = '{ticker}'
     """
     try:
-        # 모델이 아직 없거나 학습 중일 수 있으므로 예외 처리 필수
         results = list(client.query(query).result())
         if results:
             row = results[0]
             return {
-                "predicted_return": float(row.predicted_return), # 예측 수익률 (예: 0.03 = 3%)
+                "predicted_return": float(row.predicted_return),
                 "return_min": float(row.return_min),
                 "return_max": float(row.return_max)
             }
     except Exception as e:
-        # 모델이 없거나 에러 발생 시 None 반환 (분석에 지장 없도록)
-        # print(f" [ML Warning] {ticker} 예측 실패: {e}") 
         return None
     return None
