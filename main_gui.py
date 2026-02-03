@@ -87,7 +87,8 @@ class SystemInitWorker(QThread):
             self.finished_signal.emit(False, str(e))
 
 class ChartLoader(QThread):
-    data_loaded = pyqtSignal(object, object, float)
+    # Signal에 AI 예측 데이터(prediction_info) 전달용 인자 추가
+    data_loaded = pyqtSignal(object, object, float, object) 
     error_occurred = pyqtSignal(str)
 
     def __init__(self, ticker):
@@ -103,7 +104,6 @@ class ChartLoader(QThread):
 
             df = pd.DataFrame(raw_data)
             
-            # painter 코드와 동일한 컬럼 매핑 (Volume 확실하게 처리)
             rename_map = {
                 'clos': 'Close', 'last': 'Close',
                 'open': 'Open', 
@@ -114,26 +114,22 @@ class ChartLoader(QThread):
             }
             df.rename(columns=rename_map, inplace=True)
 
-            # Volume 결측치 처리 (0으로 채움)
             if 'Volume' not in df.columns: df['Volume'] = 0
             
-            # 숫자형 변환
             cols = ['Open', 'High', 'Low', 'Close', 'Volume']
             for c in cols:
                 if c in df.columns: 
                     df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
             
-            # 날짜 인덱스 설정 및 정렬
             if 'Date' in df.columns:
                 df['Date'] = pd.to_datetime(df['Date'], format='%Y%m%d', errors='coerce')
                 df.set_index('Date', inplace=True)
                 df.index.name = 'Date' 
-                df.sort_index(inplace=True) # 오름차순 (과거->현재)
+                df.sort_index(inplace=True) 
             else:
                 self.error_occurred.emit("날짜 데이터(Date) 없음")
                 return
 
-            # 등락률 계산 (마지막 vs 그 전날)
             change_rate = 0.0
             if len(df) >= 2:
                 prev = df['Close'].iloc[-2]
@@ -141,7 +137,11 @@ class ChartLoader(QThread):
                 if prev > 0:
                     change_rate = ((curr - prev) / prev) * 100
 
-            self.data_loaded.emit(self.ticker, df, change_rate)
+            # 빅쿼리 서버에서 AI 예측 데이터 가져오기
+            prediction_info = mervis_bigquery.get_prediction(self.ticker)
+
+            # 결과 전송 (예측 데이터 포함)
+            self.data_loaded.emit(self.ticker, df, change_rate, prediction_info)
 
         except Exception as e:
             self.error_occurred.emit(f"차트 오류: {str(e)}")
@@ -269,6 +269,7 @@ class MervisMainWindow(QMainWindow):
         self.chat_window = None
         
         self.current_selected_ticker = None
+        self.current_prediction = None # 현재 AI 예측값 저장
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -427,7 +428,7 @@ class MervisMainWindow(QMainWindow):
 
     def switch_to_chart_mode(self, ticker):
         self.content_stack.setCurrentIndex(1) 
-        self.status_bar.setText(f" [Data] '{ticker}' 차트 데이터 로딩 중...")
+        self.status_bar.setText(f" [Data] '{ticker}' 차트 및 AI 분석 로딩 중...")
         
         self.current_selected_ticker = ticker
         
@@ -438,10 +439,26 @@ class MervisMainWindow(QMainWindow):
         
         kis_websocket.add_watch_condition(ticker, 0, "MONITOR", "CHART_VIEW")
 
-    def on_chart_loaded(self, ticker, df, change_rate):
+    def on_chart_loaded(self, ticker, df, change_rate, prediction_info):
         if ticker != self.current_selected_ticker: return
 
-        self.status_bar.setText(f" [Data] '{ticker}' 차트 로드 완료.")
+        # AI 예측 정보 저장
+        self.current_prediction = prediction_info
+
+        # 상태 표시줄에 AI 예측 표시
+        status_msg = f" [Data] '{ticker}' 로드 완료."
+        if prediction_info:
+            pred_return = prediction_info.get('predicted_return', 0.0)
+            # 퍼센트로 변환
+            pred_pct = pred_return * 100
+            
+            # 색상 태그를 쓰려면 QLabel이 HTML을 지원해야 함. 여기선 텍스트로 표현.
+            trend = "상승" if pred_pct > 0 else "하락"
+            status_msg += f" | AI 내일 예측: {trend} {pred_pct:+.2f}%"
+        else:
+            status_msg += " | AI 예측: 데이터 부족"
+
+        self.status_bar.setText(status_msg)
         
         # 무조건 Chart 데이터(API)를 신뢰하여 로드
         self.chart_view.load_data(ticker, df, change_rate)
@@ -458,7 +475,14 @@ class MervisMainWindow(QMainWindow):
             if self.chart_view.current_ticker == ticker:
                 self.chart_view.update_realtime_price(price)
                 self.chart_view.update_header_info(price, change)
-                self.status_bar.setText(f" [Live] {ticker}: ${price:,.2f} ({change:+.2f}%)")
+                
+                # 실시간 정보와 AI 정보 함께 표시
+                base_msg = f" [Live] {ticker}: ${price:,.2f} ({change:+.2f}%)"
+                if self.current_prediction:
+                    pred_pct = self.current_prediction.get('predicted_return', 0.0) * 100
+                    base_msg += f" | AI: {pred_pct:+.2f}%"
+                
+                self.status_bar.setText(base_msg)
 
     def closeEvent(self, event):
         if self.chat_window:
