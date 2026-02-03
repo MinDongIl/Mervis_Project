@@ -67,14 +67,15 @@ class SystemInitWorker(QThread):
 
     def run(self):
         try:
-            self.progress_signal.emit("데이터베이스 점검 중...")
-            if not mervis_bigquery.check_db_freshness():
-                self.progress_signal.emit("데이터 갱신 중...")
-                update_volume_tier.update_volume_data()
-            self.progress_signal.emit("매매 복기 중...")
-            mervis_examiner.run_examination()
-            self.progress_signal.emit("자산 기록 중...")
+            # 서버가 24시간 데이터를 갱신하므로 로컬에서는 중복 작업 제거
+            # 토큰은 kis_account 함수 호출 시 내부적으로 자동 검증/발급됨
+            
+            self.progress_signal.emit("서버 연결 및 자산 동기화 중...")
+            
+            # 1. 내 자산 실시간 조회 (이 과정에서 API 토큰 유효성 검증됨)
             my_asset = kis_account.get_my_total_assets()
+            
+            # 2. 자산 변동 내역 DB 기록 (로그용)
             if my_asset:
                 mervis_bigquery.save_daily_balance(
                     total_asset=my_asset['total'],
@@ -82,9 +83,14 @@ class SystemInitWorker(QThread):
                     stock_val=my_asset['stock'],
                     pnl_daily=my_asset['pnl']
                 )
-            self.finished_signal.emit(True, "초기화 완료")
+                self.finished_signal.emit(True, "시스템 준비 완료")
+            else:
+                # 자산 조회가 안 되어도 프로그램은 켜지도록 처리
+                self.finished_signal.emit(True, "자산 정보 로드 실패 (재시도 필요)")
+                
         except Exception as e:
-            self.finished_signal.emit(False, str(e))
+            # 치명적 오류가 아니면 실행 유지
+            self.finished_signal.emit(True, f"경고: 초기화 중 일부 오류 ({e})")
 
 class ChartLoader(QThread):
     # Signal에 AI 예측 데이터(prediction_info) 전달용 인자 추가
