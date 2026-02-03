@@ -1,0 +1,24 @@
+# Git 관리 폴더 제외
+.git
+.gitignore
+.dockerignore
+
+# 가상환경 폴더 제외 (가장 중요! 리눅스랑 윈도우 환경 섞이면 안 됨)
+venv/
+env/
+
+# 파이썬 캐시 파일 제외
+__pycache__
+*.pyc
+
+# 환경 설정 및 로그 제외
+.env
+*.log
+
+# 엑셀이나 CSV 같은 로컬 데이터 파일 제외 (DB 쓰니까 필요 없음)
+*.csv
+*.xlsx
+*.json
+# 단, 서비스 키 파일은 서버 실행에 필요하므로 포함시킵니다.
+# service_account.json (주석 처리하여 포함됨)
+!service_account.json
