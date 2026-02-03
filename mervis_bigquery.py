@@ -545,32 +545,39 @@ def get_all_tickers_simple():
 
 def get_prediction(ticker):
     """
-    [머신러닝] 빅쿼리 ARIMA 모델에게 '내일 수익률' 예측 요청
+    [머신러닝] Boosted Tree 모델에게 '내일 수익률' 예측 요청 (ML.PREDICT 사용)
     """
     client = get_client()
     if not client: return None
 
-    # 내일 날짜 (Next Business Day) 예측
+    # 최신 데이터 1건을 가져와서 예측
+    # ML.PREDICT는 회귀 모델의 경우 'predicted_정답컬럼명'으로 결과를 반환
+    # 정답 컬럼은 predicted_next_day_return
     query = f"""
         SELECT
-          forecast_value as predicted_return,
-          prediction_interval_lower_bound as return_min,
-          prediction_interval_upper_bound as return_max
+          predicted_next_day_return as predicted_return
         FROM
-          ML.FORECAST(MODEL `{client.project}.{DATASET_ID}.return_forecast_model`, 
-                      STRUCT(1 AS horizon, 0.9 AS confidence_level))
-        WHERE
-          ticker = '{ticker}'
+          ML.PREDICT(MODEL `{client.project}.{DATASET_ID}.return_forecast_model`, 
+            (
+              SELECT * FROM `{client.project}.{DATASET_ID}.{TABLE_FEATURES}`
+              WHERE ticker = '{ticker}'
+              ORDER BY date DESC
+              LIMIT 1
+            )
+          )
     """
     try:
         results = list(client.query(query).result())
         if results:
             row = results[0]
+            pred = float(row.predicted_return)
+            # 회귀 모델은 구간 예측을 기본 제공하지 않으므로, 일단 예측값으로 통일
             return {
-                "predicted_return": float(row.predicted_return),
-                "return_min": float(row.return_min),
-                "return_max": float(row.return_max)
+                "predicted_return": pred,
+                "return_min": pred,
+                "return_max": pred
             }
     except Exception as e:
+        # print(f" [ML Error] {ticker} 예측 실패: {e}") 
         return None
     return None
