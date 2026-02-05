@@ -1,5 +1,4 @@
 import requests
-import secret
 import kis_auth
 import mervis_state
 import time 
@@ -15,14 +14,11 @@ def _fetch_chart(ticker, gubn, bymd=""):
         return None
     
     mode = mervis_state.get_mode()
-    if mode == "REAL":
-        base_url = secret.URL_REAL
-        app_key = secret.APP_KEY_REAL
-        app_secret = secret.APP_SECRET_REAL
-    else:
-        base_url = secret.URL_MOCK
-        app_key = secret.APP_KEY_MOCK
-        app_secret = secret.APP_SECRET_MOCK
+    # secret 직접 참조 대신 kis_auth의 환경 설정 함수 사용
+    config = kis_auth.get_env_config(mode)
+    base_url = config['base_url']
+    app_key = config['app_key']
+    app_secret = config['app_secret']
 
     path = "uapi/overseas-price/v1/quotations/price"
     url = f"{base_url}/{path}"

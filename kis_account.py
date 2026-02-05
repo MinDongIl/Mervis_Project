@@ -1,26 +1,26 @@
 import requests
 import json
 import logging
+import os
 import mervis_state
 import kis_auth
-import secret
 
 def _get_api_config():
     mode = mervis_state.get_mode()
     
     if mode == "REAL":
-        base_url = secret.URL_REAL
-        app_key = secret.APP_KEY_REAL
-        app_secret = secret.APP_SECRET_REAL
-        cano = getattr(secret, 'CANO_REAL', getattr(secret, 'CANO', ''))
-        prdt = getattr(secret, 'ACNT_PRDT_CD_REAL', getattr(secret, 'ACNT_PRDT_CD', ''))
+        base_url = os.getenv("KIS_URL_REAL", "https://openapi.koreainvestment.com:9443")
+        app_key = os.getenv("KIS_APP_KEY_REAL")
+        app_secret = os.getenv("KIS_APP_SECRET_REAL")
+        cano = os.getenv("KIS_CANO_REAL", "")
+        prdt = os.getenv("KIS_ACNT_PRDT_CD_REAL", "")
         tr_id_balance = "CTRP6504R" # 해외주식 잔고 (실전)
     else:
-        base_url = secret.URL_MOCK
-        app_key = secret.APP_KEY_MOCK
-        app_secret = secret.APP_SECRET_MOCK
-        cano = getattr(secret, 'CANO_MOCK', '')
-        prdt = getattr(secret, 'ACNT_PRDT_CD_MOCK', '')
+        base_url = os.getenv("KIS_URL_MOCK", "https://openapivts.koreainvestment.com:29443")
+        app_key = os.getenv("KIS_APP_KEY_MOCK")
+        app_secret = os.getenv("KIS_APP_SECRET_MOCK")
+        cano = os.getenv("KIS_CANO_MOCK", "")
+        prdt = os.getenv("KIS_ACNT_PRDT_CD_MOCK", "")
         tr_id_balance = "VTRP6504R" # 해외주식 잔고 (모의)
 
     if isinstance(cano, str): cano = cano.strip()
@@ -36,9 +36,7 @@ def _get_api_config():
     }
 
 def get_my_total_assets():
-    """
-    USD 예수금 + 보유 주식 평가액 합산 및 상세 리스트 반환
-    """
+    # USD 예수금 + 보유 주식 평가액 합산 및 상세 리스트 반환
     config = _get_api_config()
     token = kis_auth.get_access_token()
     
@@ -138,7 +136,7 @@ def get_my_total_assets():
                 total_stock_pnl_rate = (total_pnl_amt / invested_principal) * 100
 
         # [디버그 로그]
-        print(f"\n [계좌] USD예수금: ${usd_deposit:.2f} | 주식평가: ${stock_val_total:.2f} | 종목수: {len(holding_list)}")
+        print(f"\n [Account] Deposit: ${usd_deposit:.2f} | Stock Value: ${stock_val_total:.2f} | Items: {len(holding_list)}")
 
         return {
             "total": round(total_asset, 2),

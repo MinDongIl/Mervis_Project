@@ -1,6 +1,5 @@
 import requests
 import json
-import secret
 import time
 import os
 import mervis_state
@@ -8,8 +7,23 @@ import mervis_state
 # 토큰 정보를 저장할 로컬 파일 경로
 CACHE_FILE = "mervis_token_cache.json"
 
+# 환경 변수 로드 (기본값 설정 포함)
+def get_env_config(mode):
+    if mode == "REAL":
+        return {
+            "base_url": os.getenv("KIS_URL_REAL", "https://openapi.koreainvestment.com:9443"),
+            "app_key": os.getenv("KIS_APP_KEY_REAL"),
+            "app_secret": os.getenv("KIS_APP_SECRET_REAL")
+        }
+    else:
+        return {
+            "base_url": os.getenv("KIS_URL_MOCK", "https://openapivts.koreainvestment.com:29443"),
+            "app_key": os.getenv("KIS_APP_KEY_MOCK"),
+            "app_secret": os.getenv("KIS_APP_SECRET_MOCK")
+        }
+
 def load_cache():
-    """파일에서 토큰 및 키 정보를 읽어옴"""
+    # 파일에서 토큰 및 키 정보를 읽어옴
     if not os.path.exists(CACHE_FILE):
         return {}
     try:
@@ -19,12 +33,12 @@ def load_cache():
         return {}
 
 def save_cache(data):
-    """토큰 및 키 정보를 파일에 저장함"""
+    # 토큰 및 키 정보를 파일에 저장함
     try:
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
     except Exception as e:
-        print(f"[시스템] 토큰 파일 저장 실패: {e}")
+        print(f"[System] Failed to save token file: {e}")
 
 def get_access_token():
     mode = mervis_state.get_mode()
@@ -42,14 +56,14 @@ def get_access_token():
         return saved_token
 
     # 2. 토큰 만료 또는 없음 -> 신규 발급 요청
-    if mode == "REAL":
-        base_url = secret.URL_REAL
-        app_key = secret.APP_KEY_REAL
-        app_secret = secret.APP_SECRET_REAL
-    else:
-        base_url = secret.URL_MOCK
-        app_key = secret.APP_KEY_MOCK
-        app_secret = secret.APP_SECRET_MOCK
+    config = get_env_config(mode)
+    base_url = config["base_url"]
+    app_key = config["app_key"]
+    app_secret = config["app_secret"]
+
+    if not app_key or not app_secret:
+        print(f"[Auth Error] API Key or Secret for {mode} is missing in Environment Variables.")
+        return None
 
     path = "oauth2/tokenP"
     url = f"{base_url}/{path}"
@@ -62,7 +76,7 @@ def get_access_token():
     }
     
     try:
-        print(f"[인증] {mode} 서버로부터 새로운 Access Token을 발급받습니다...")
+        print(f"[Auth] Requesting new Access Token from {mode} server...")
         res = requests.post(url, headers=headers, data=json.dumps(body), timeout=5)
         
         if res.status_code == 200:
@@ -80,14 +94,14 @@ def get_access_token():
             
             save_cache(cache)
             
-            print(f"[인증] 토큰 발급 완료. (만료: {expires_in}초 후)")
+            print(f"[Auth] Token issued successfully. (Expires in: {expires_in}s)")
             return new_token
         else:
-            print(f"[인증실패] {mode} 모드: {res.text}")
+            print(f"[Auth Failed] {mode} Mode: {res.text}")
             return None
             
     except Exception as e:
-        print(f"[인증오류] 통신 장애: {e}")
+        print(f"[Auth Error] Connection failed: {e}")
         return None
 
 def get_websocket_key():
@@ -106,14 +120,13 @@ def get_websocket_key():
         return saved_ws_key
 
     # 2. 신규 키 발급 요청
-    if mode == "REAL":
-        base_url = secret.URL_REAL
-        app_key = secret.APP_KEY_REAL
-        app_secret = secret.APP_SECRET_REAL
-    else:
-        base_url = secret.URL_MOCK
-        app_key = secret.APP_KEY_MOCK
-        app_secret = secret.APP_SECRET_MOCK
+    config = get_env_config(mode)
+    base_url = config["base_url"]
+    app_key = config["app_key"]
+    app_secret = config["app_secret"]
+
+    if not app_key or not app_secret:
+        return None
 
     path = "oauth2/Approval"
     url = f"{base_url}/{path}"
@@ -126,7 +139,7 @@ def get_websocket_key():
     }
     
     try:
-        print(f"[인증] {mode} 서버로부터 새로운 WebSocket Key를 발급받습니다...")
+        print(f"[Auth] Requesting new WebSocket Key from {mode} server...")
         res = requests.post(url, headers=headers, data=json.dumps(body), timeout=5)
         
         if res.status_code == 200:
@@ -140,11 +153,11 @@ def get_websocket_key():
             
             save_cache(cache)
             
-            print(f"[인증] 웹소켓 키 발급 완료.")
+            print(f"[Auth] WebSocket Key issued successfully.")
             return new_key
         else:
-            print(f"[인증실패] WS Key 발급 실패: {res.text}")
+            print(f"[Auth Failed] WS Key generation failed: {res.text}")
             return None
     except Exception as e:
-        print(f"[인증오류] 통신 장애: {e}")
+        print(f"[Auth Error] Connection failed: {e}")
         return None

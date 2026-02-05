@@ -8,7 +8,6 @@ from deep_translator import GoogleTranslator
 import mervis_state
 
 # BigQuery 상수
-KEY_PATH = "service_account.json"
 DATASET_ID = "mervis_db"
 TABLE_HISTORY = "trade_history"
 TABLE_USER = "user_info"
@@ -18,11 +17,20 @@ TABLE_ANALYSIS = "stock_analysis"
 TABLE_FEATURES = "daily_features"
 
 def get_client():
-    if not os.path.exists(KEY_PATH):
-        print(f" [BQ Error] 키 파일을 찾을 수 없습니다: {KEY_PATH}")
+    # 1. 로컬 개발 환경용: 파일이 존재하면 사용 (선택 사항)
+    # 2. 클라우드 환경용: 파일이 없으면 ADC(Application Default Credentials) 사용
+    try:
+        if os.path.exists("service_account.json"):
+            credentials = service_account.Credentials.from_service_account_file("service_account.json")
+            return bigquery.Client(credentials=credentials, project=credentials.project_id)
+        else:
+            # GCP Secret Manager나 환경 변수에 의해 인증됨
+            # 프로젝트 ID는 환경 변수 'GOOGLE_CLOUD_PROJECT'에서 자동으로 가져옴
+            project_id = os.getenv("GCP_PROJECT_ID")
+            return bigquery.Client(project=project_id)
+    except Exception as e:
+        print(f" [BQ Error] Failed to initialize BigQuery Client: {e}")
         return None
-    credentials = service_account.Credentials.from_service_account_file(KEY_PATH)
-    return bigquery.Client(credentials=credentials, project=credentials.project_id)
 
 def check_db_freshness():
     client = get_client()

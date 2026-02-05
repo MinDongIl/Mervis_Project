@@ -3,11 +3,11 @@ import kis_chart
 import datetime
 import mervis_state
 from google import genai
-import secret
 import os
 
-# Gemini 클라이언트 설정 (반성문 작성용)
-client = genai.Client(api_key=secret.GEMINI_API_KEY)
+# API 키를 환경 변수에서 로드
+api_key = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=api_key)
 
 # 1일 1회 실행 제한을 위한 타임스탬프 파일 설정
 TIMESTAMP_FILE = ".examiner_last_run"

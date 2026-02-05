@@ -1,11 +1,12 @@
 from google import genai
-import secret
-import json
 import os
+import json
 from datetime import datetime
 import mervis_bigquery 
 
-client = genai.Client(api_key=secret.GEMINI_API_KEY)
+# API 키를 환경 변수에서 로드
+api_key = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=api_key)
 USER_DATA_FILE = "mervis_user_data.json"
 
 # 로컬 파일 초기화 (공통 함수)

@@ -1,6 +1,6 @@
 import requests
 import json
-import secret
+import os
 import kis_auth
 import mervis_state
 
@@ -10,15 +10,22 @@ def send_order(ticker, price, qty, is_buy=True):
 
     mode = mervis_state.get_mode()
     
-    # [안전장치] 실전 모드에서 매매는 사용자 확인 필요 (여기선 일단 로그만 찍음)
+    # 환경 변수 로드
+    config = kis_auth.get_env_config(mode)
+    base_url = config['base_url']
+    app_key = config['app_key']
+    app_secret = config['app_secret']
+
+    # 계좌 정보 로드 (환경 변수)
     if mode == "REAL":
-        # base_url = secret.URL_REAL ... (실전 주문 로직은 위험하므로 일단 막아둠)
+        cano = os.getenv("KIS_CANO_REAL", "")
+        prdt = os.getenv("KIS_ACNT_PRDT_CD_REAL", "")
+        # [안전장치] 실전 모드에서 매매는 사용자 확인 필요 (여기선 일단 로그만 찍음)
         print(f"[주의] 실전 모드({ticker}) 주문은 현재 비활성화 상태입니다.")
         return False
     else:
-        base_url = secret.URL_MOCK
-        app_key = secret.APP_KEY_MOCK
-        app_secret = secret.APP_SECRET_MOCK
+        cano = os.getenv("KIS_CANO_MOCK", "")
+        prdt = os.getenv("KIS_ACNT_PRDT_CD_MOCK", "")
         tr_id = "VTTT1002U" if is_buy else "VTTT1006U"
 
     path = "uapi/overseas-stock/v1/trading/order"
@@ -33,8 +40,8 @@ def send_order(ticker, price, qty, is_buy=True):
     }
     
     params = {
-        "CANO": secret.CANO_MOCK, # 모의계좌
-        "ACNT_PRDT_CD": secret.ACNT_PRDT_CD_MOCK,
+        "CANO": cano,
+        "ACNT_PRDT_CD": prdt,
         "OVRS_EXCG_CD": "NASD",
         "PDNO": ticker,
         "ORD_DVSN": "00",

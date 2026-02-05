@@ -1,5 +1,5 @@
 from google import genai
-import secret
+import os
 import kis_chart
 import kis_scan
 import json
@@ -12,8 +12,10 @@ import mervis_painter
 # 분석 모듈 임포트
 from modules import technical, fundamental, supply
 
-client = genai.Client(api_key=secret.GEMINI_API_KEY)
-USER_NAME = getattr(secret, 'USER_NAME', '사용자')
+# API 키를 환경 변수에서 로드
+api_key = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=api_key)
+USER_NAME = os.getenv("USER_NAME", "User")
 
 # --- 유틸리티 함수 ---
 

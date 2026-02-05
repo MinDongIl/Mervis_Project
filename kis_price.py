@@ -1,7 +1,7 @@
 import requests
 import json
-import secret
 import kis_auth
+import mervis_state
 
 # === [머비스 설정] ===
 # 기능: 미국 주식 현재 가격 조회
@@ -15,15 +15,19 @@ def get_current_price(ticker):
     if not access_token:
         return None
 
+    # 현재 모드에 맞는 설정 가져오기
+    mode = mervis_state.get_mode()
+    config = kis_auth.get_env_config(mode)
+    
     # URL 설정 (해외주식 현재가)
     path = "uapi/overseas-price/v1/quotations/price"
-    url = f"{secret.URL_MOCK}/{path}"
+    url = f"{config['base_url']}/{path}"
 
     headers = {
         "content-type": "application/json",
         "authorization": f"Bearer {access_token}",
-        "appKey": secret.APP_KEY_MOCK,
-        "appSecret": secret.APP_SECRET_MOCK,
+        "appKey": config['app_key'],
+        "appSecret": config['app_secret'],
         "tr_id": "HHDFS76200200"
     }
 

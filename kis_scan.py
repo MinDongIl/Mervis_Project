@@ -1,5 +1,4 @@
 import requests
-import secret
 import kis_auth
 import mervis_state
 import mervis_profile

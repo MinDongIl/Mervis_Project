@@ -1,5 +1,5 @@
 from google import genai
-import secret
+import os
 import mervis_profile 
 import mervis_bigquery 
 import mervis_brain
@@ -7,8 +7,10 @@ import kis_websocket
 import json
 import re
 
-client = genai.Client(api_key=secret.GEMINI_API_KEY)
-USER_NAME = getattr(secret, 'USER_NAME', '사용자')
+# API 키를 환경 변수에서 로드
+api_key = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=api_key)
+USER_NAME = os.getenv("USER_NAME", "User")
 
 # --- GUI 연동용 AI 엔진 클래스 ---
 class MervisAI_Engine:
