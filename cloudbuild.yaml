@@ -1,0 +1,29 @@
+steps:
+  # 1. Docker 이미지 빌드
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '-t', 'asia-northeast3-docker.pkg.dev/gen-lang-client-0129980697/mervis-repo/mervis-core:latest',
+      '.'
+    ]
+    dir: 'Mervis'  # Dockerfile이 있는 폴더명
+
+  # 2. 이미지를 Artifact Registry로 푸시
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'push',
+      'asia-northeast3-docker.pkg.dev/gen-lang-client-0129980697/mervis-repo/mervis-core:latest'
+    ]
+
+  # 3. MIG(관리형 인스턴스 그룹) 롤링 업데이트 (서버 교체)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args: [
+      'compute', 'instance-groups', 'managed', 'rolling-action', 'replace',
+      'mervis-mig',
+      '--region=asia-northeast3'
+    ]
+
+timeout: '1200s'
+options:
+  logging: CLOUD_LOGGING_ONLY
