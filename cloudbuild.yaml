@@ -8,7 +8,7 @@ steps:
     ]
     dir: 'Mervis'  # Dockerfile이 있는 폴더명
 
-  # 2. 이미지를 Artifact Registry로 푸시
+  # 2. 이미지를 Artifact Registry로 푸시.
   - name: 'gcr.io/cloud-builders/docker'
     args: [
       'push',
