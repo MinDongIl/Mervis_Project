@@ -10,3 +10,4 @@ mplfinance
 pyqt6
 schedule
 pytz
+holidays
