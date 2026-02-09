@@ -11,3 +11,4 @@ pyqt6
 schedule
 pytz
 holidays
+pandas_ta
