@@ -1,16 +1,30 @@
+# [Core System]
+numpy
+pandas
+yfinance
+
+# [Technical Analysis]
+pandas_ta
+mplfinance
+lxml
+
+# [Google Cloud & AI]
 google-genai
 google-cloud-bigquery
+google-cloud-secret-manager
+
+# [Network & Web]
 requests
-pandas
 deep-translator
 websockets
 websocket-client
-cryptography
-mplfinance
-pyqt6
+
+# [Utilities]
 schedule
 pytz
 holidays
-pandas_ta
-yfinance
-lxml
+cryptography
+
+# [GUI & Notification]
+pyqt6
+discord
