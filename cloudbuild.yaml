@@ -19,7 +19,7 @@ steps:
     entrypoint: 'gcloud'
     args: [
       'compute', 'instance-groups', 'managed', 'rolling-action', 'replace',
-      'mervis-mig',
+      'mervis-serving-mig',
       '--region=asia-northeast3'
     ]
 
