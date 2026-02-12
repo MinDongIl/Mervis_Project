@@ -1,0 +1,51 @@
+[연구 일지] 2026-02-12
+
+1. 주요 내용
+도메인(mervis.cloud) 구입 및 Cloud DNS 연동을 통한 서비스 식별 체계 구축 완료.
+HTTPS Load Balancer(ALB) 및 관리형 SSL 인증서 적용으로 보안 통신 환경 구성.
+Chaos Engineering(카오스 엔지니어링) Lv.1 테스트 수행: 인스턴스 강제 삭제(INF-01) 및 애플리케이션 프리징(INF-02) 상황에서의 인프라 자동 복구(Auto-healing) 능력 검증 완료.
+
+2. 진행 요약
+도메인 구입 후 Terraform을 통해 Cloud DNS Managed Zone을 생성하고, 네임서버를 연동하여 도메인 소유권을 확인함.
+외부 트래픽 처리를 위해 HTTPS Load Balancer를 구축하고, Google Managed SSL 인증서를 발급받아 보안 접속(HTTPS)을 활성화함.
+초기 SSL 발급 대기 시간 동안 발생한 502/Empty Response 오류를 모니터링하며 정상 발급(Active) 상태를 확인함.
+인프라 생존성 테스트(INF-01)를 위해 실행 중인 VM을 강제로 삭제하였으며, MIG가 이를 감지하고 즉시 새 인스턴스를 재생성함을 검증함.
+애플리케이션 프리징 테스트(INF-02)를 위해 실행 중인 컨테이너를 일시 정지(docker pause) 시켰으나, 초기에는 자동 복구가 동작하지 않음.
+원인 분석 결과 MIG에 '자동 치유 정책(Auto-healing Policy)'이 누락됨을 확인하고, Terraform 코드를 수정하여 좀비 프로세스가 된 서버를 자동으로 교체하도록 조치함.
+
+3. 주요 수정 및 개발 내용
+[Infrastructure (Terraform - Network/DNS)]
+Cloud DNS: 'mervis.cloud' 도메인 관리를 위한 Managed Zone 리소스 생성 및 네임서버 출력 설정.
+DNS Record: 로드밸런서 IP와 도메인을 연결하는 A 레코드(Root, www) 추가.
+
+[Infrastructure (Terraform - Load Balancer)]
+HTTPS LB 구축: Global Address, Managed SSL Certificate, Url Map, Target Proxy, Forwarding Rule로 이어지는 L7 로드밸런서 모듈 신규 개발.
+Lifecycle 관리: 헬스 체크 리소스 교체 시 충돌 방지를 위한 'create_before_destroy' 옵션 적용.
+
+[Infrastructure (Terraform - Compute)]
+Auto-healing 구현: modules/compute/main.tf 내 MIG 리소스에 'auto_healing_policies' 블록 추가.
+Health Check 분리: 로드밸런싱용 헬스 체크와 별도로, 인스턴스 생사를 결정하는 자동 치유 전용 헬스 체크(interval 5s, threshold 2) 추가.
+
+[Test Method (Chaos Engineering)]
+장애 주입: 코드 수정 없이 운영체제 레벨에서 프로세스를 멈추는 'docker pause' 명령어를 활용하여, 실제 프리징 상황을 완벽하게 시뮬레이션함.
+
+4. 시행 착오 및 오류 해결
+[Cloud DNS API 비활성화]
+증상: Terraform Apply 시 'Cloud DNS API has not been used...' 403 오류 발생.
+원인: 프로젝트 생성 후 DNS API를 명시적으로 활성화하지 않음.
+해결: gcloud services enable dns.googleapis.com 명령어로 API 활성화 후 재배포.
+
+[헬스 체크 리소스 교체 충돌 (Code 400)]
+증상: 헬스 체크 설정을 변경하려 했으나 'Resource In Use' 오류로 기존 리소스 삭제 실패.
+원인: 로드밸런서가 기존 헬스 체크를 점유하고 있어 Terraform이 삭제를 못함.
+해결: lifecycle { create_before_destroy = true } 설정을 추가하여, 새 리소스를 먼저 생성하고 연결한 뒤 구형을 삭제하도록 순서 조정.
+
+[자동 치유 미작동 (INF-02 실패)]
+증상: docker pause로 컨테이너를 멈췄으나, 로드밸런서만 트래픽을 차단하고 VM은 계속 살아있는 상태 유지.
+원인: MIG에 Health Check가 연결되지 않아, 관리자가 VM의 애플리케이션 상태를 '정상(Running)'으로만 판단함.
+해결: Terraform compute 모듈에 auto_healing_policies를 명시적으로 선언하여, 헬스 체크 실패 시 VM을 강제 재시작(Recreate)하도록 설정.
+
+5. 다음 목표
+SRE 포트폴리오 Lv.2 시나리오 진행: 배포 실패 및 롤백(INF-03), 보안 권한 통제(INF-04) 테스트.
+CPU 부하 테스트를 통한 Auto-scaling(자동 증설) 동작 검증.
+Discord Webhook을 연동하여 장애 발생 및 복구 상황(알림) 자동 수신 환경 구축.
