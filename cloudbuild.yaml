@@ -14,15 +14,15 @@ steps:
       'asia-northeast3-docker.pkg.dev/gen-lang-client-0129980697/mervis-repo/mervis-core:latest'
     ]
 
-  # 3. MIG 롤링
+  # 3. MIG 롤링 업데이트
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: 'gcloud'
     args: [
       'compute', 'instance-groups', 'managed', 'rolling-action', 'replace',
       'mervis-serving-mig',
       '--region=asia-northeast3',
-      '--max-unavailable=0',
-      '--max-surge=1'
+      '--max-unavailable=0',  
+      '--max-surge=3'         
     ]
 
 timeout: '1200s'
