@@ -2,9 +2,9 @@ import os
 import sys
 import time
 import socket
-import threading
 import psutil
 from flask import Flask, jsonify, render_template_string
+from multiprocessing import Process
 
 app = Flask(__name__)
 
@@ -97,9 +97,8 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# CPU 부하 발생 함수
-def cpu_stress():
-    timeout = time.time() + 30  # 30초 유지
+def cpu_stress(duration=30):
+    timeout = time.time() + duration
     while time.time() < timeout:
         pass
 
@@ -129,9 +128,12 @@ def crash():
 @app.route('/api/stress')
 def stress():
     print("[CHAOS] CPU Stress test initiated.")
-    for _ in range(psutil.cpu_count() or 1):
-        threading.Thread(target=cpu_stress).start()
-    return jsonify({"message": "CPU Stress test started"}), 200
+    # 코어 개수만큼 독립된 프로세스를 생성하여 각각 100%를 찍도록 강제
+    cores = psutil.cpu_count(logical=True)
+    for _ in range(cores):
+        p = Process(target=cpu_stress, args=(30,))
+        p.start()
+    return jsonify({"message": f"CPU Stress test started with {cores} processes."}), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
