@@ -1,0 +1,38 @@
+[연구 일지] 2026-03-03
+
+1. 주요 내용
+SRE 포트폴리오 Lv.2 보안 테스트(INF-04): Secret Manager 접근 통제 및 Fail-Fast 아키텍처 동작 검증 완료.
+SRE 포트폴리오 Lv.2 모니터링 체계 구축(INF-05 준비): Ops Agent 설치 및 Cloud Monitoring 기반 디스크 고갈 경보(Alert) 파이프라인 구성.
+
+2. 진행 요약
+IAM 최소 권한 원칙(Principle of Least Privilege)을 검증하기 위해, Terraform 코드를 수정하여 VM 서비스 계정의 Secret Manager 접근 권한(secretAccessor)을 임의로 회수함.
+권한 회수 후 서버를 재시작하여 직렬 포트(Serial Port) 로그를 분석한 결과, 부팅 시작 스크립트 단계에서 필수 키 요청 시 즉각적인 '403 PERMISSION_DENIED' 에러가 발생함을 확인함.
+결과적으로 키를 받지 못한 Docker 컨테이너가 구동을 포기(Exit Status 125)하여, 비정상 상태에서 앱이 실행되지 않는 'Fail-Fast' 메커니즘이 인프라 레벨에서 견고하게 작동함을 증명함.
+보안 테스트 완료 후 인프라 권한을 원상 복구하였으며, 이어지는 관측성(Observability) 구축을 위해 Terraform으로 'monitoring.tf'를 작성함.
+서버 내부 지표(디스크, 메모리 등) 수집을 위해 시작 스크립트에 GCP Ops Agent 자동 설치 코드를 추가하고, 디스크 사용량 80% 초과 시 이메일로 알림을 발송하는 경보 정책(Alert Policy) 구성을 완료함.
+
+3. 주요 수정 및 개발 내용
+[Security & IAM (Terraform)]
+Secret Manager 접근 통제: modules/compute/main.tf 내 google_project_iam_member(secret_accessor) 리소스를 주석 처리/해제하여 권한 통제 및 복구 테스트 수행.
+
+[Observability (Terraform)]
+Cloud Monitoring 및 알림 채널 구축: monitoring.tf 파일을 신규 생성하여 google_monitoring_notification_channel(이메일) 및 google_monitoring_alert_policy(디스크 80% 초과 조건) 리소스 프로비저닝.
+
+[Compute (Startup Script)]
+Ops Agent 설치 로직 추가: 서버 내부 지표 수집을 위해 VM 시작 스크립트(metadata_startup_script) 내에 dl.google.com을 통한 Ops Agent 다운로드 및 자동 설치(add-google-cloud-ops-agent-repo.sh) 스크립트 추가.
+
+4. 시행 착오 및 오류 해결
+[MIG 롤링 재시작 시 max-unavailable 제약 (Code 1)]
+증상: gcloud compute instance-groups managed rolling-action restart 명령어 실행 중 'maxUnavailable' 설정 오류 발생.
+원인: 이전 배포 테스트의 무중단 설정(max-unavailable=0)과의 충돌 및 리전형(Regional) MIG의 Zone 개수 분배(최소 3대 단위) 제약.
+해결: 명령어에 '--max-unavailable=3' 옵션을 명시적으로 추가하여 리전형 롤링 재시작 조건 충족 후 성공.
+
+[Cloud Monitoring API 비활성화 에러 (Error 403)]
+증상: monitoring.tf 적용(Terraform Apply) 중 'Cloud Monitoring API has not been used... SERVICE_DISABLED' 오류 발생.
+원인: 프로젝트 생성 후 Cloud Monitoring 관련 API를 명시적으로 호출/활성화하지 않아 GCP 기본 보안 정책에 의해 차단됨.
+해결: 'gcloud services enable monitoring.googleapis.com' 명령어로 API를 명시적으로 활성화한 후 재배포하여 정상 적용 완료.
+
+5. 다음 목표
+SRE 포트폴리오 Lv.2 모니터링 시나리오(INF-05) 진행: 더미 파일(fallocate) 생성을 통한 디스크 용량 강제 고갈 테스트 및 이메일 경보 수신 확인.
+포맷 변환용 Cloud Function을 활용한 Discord Webhook 장애 알림 연동 고도화 검토.
+SRE 포트폴리오 Lv.3 시나리오 진행: 트래픽 과부하(Load Test)를 통한 Auto-scaling(자동 증설) 동작 검증(INF-06).
