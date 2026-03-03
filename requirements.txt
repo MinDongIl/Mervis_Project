@@ -28,3 +28,6 @@ cryptography
 # [GUI & Notification]
 pyqt6
 discord
+
+Flask
+psutil
