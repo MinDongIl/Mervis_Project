@@ -1,0 +1,39 @@
+[연구 일지] 2026-03-04
+
+1. 주요 내용
+- SRE 포트폴리오 Lv.3: 트래픽 부하 테스트(INF-06)를 위한 Auto-scaling 인프라 프로비저닝 및 Cloud Monitoring 커스텀 대시보드 구축.
+- 부하 주입(Stress Test) 스크립트 트러블슈팅: Python GIL 한계 식별 및 멀티프로세싱(multiprocessing) 아키텍처로의 전환.
+
+2. 진행 요약
+- Terraform 코드를 수정하여 서비스용 인스턴스 체급을 'e2-standard-2'로 상향하고, CPU 70% 임계치 및 주간 Pre-warming(최소 3대 유지) 스케줄이 포함된 오토스케일러(Auto-scaler) 리소스를 배포함.
+- 브라우저 강력 캐시 및 이전 로드밸런서 상태값으로 인해 Apex 도메인(mervis.cloud) 접속 시 에러 페이지가 노출되는 현상을 식별, 서브도메인(www.mervis.cloud) 우회 접속을 통해 해결함.
+- GCP Cloud Monitoring 환경에서 타겟 MIG(mervis-serving-mig)의 'CPU 사용률'과 '인스턴스 개수'를 추적하는 커스텀 대시보드를 구성함.
+- 1차 부하 주입 테스트 결과, CPU 사용량이 40~50%에서 정체되어 오토스케일링 기준치(70%)를 넘지 못하는 문제를 확인함.
+- 원인 분석 결과, 기존 Python 앱(app.py)의 부하 로직이 단일 스레드 기반으로 작성되어 GIL(Global Interpreter Lock) 제약에 의해 2코어(e2-standard-2) 자원을 100% 점유하지 못하는 것으로 확인됨.
+- 이를 해결하기 위해 psutil 모듈로 시스템 코어 수를 동적 확인하고, multiprocessing.Process를 활용해 각 코어에 독립적인 부하를 주는 방식으로 코드를 전면 수정 및 반영함.
+
+3. 주요 수정 및 개발 내용
+[Infrastructure (Terraform)]
+- google_compute_instance_template: serving_tpl의 machine_type을 e2-standard-2로 상향.
+- google_compute_region_autoscaler 신규 추가: max_replicas 10, min_replicas 1, target_cpu_utilization 0.7 설정 및 비즈니스 아워(09~18시) 스케줄링 정책 적용.
+
+[Application (Python/Flask)]
+- 단일 스레드 기반 CPU 부하 로직(while loop)을 코어 개수만큼 독립 프로세스를 생성하여 병렬 실행하는 로직으로 변경 (multiprocessing 모듈 도입).
+
+[Monitoring (GCP Console)]
+- VM 인스턴스의 CPU utilization (Line 차트) 및 Instance Group의 Size (Stacked Bar 차트) 커스텀 위젯 생성.
+
+4. 시행 착오 및 오류 해결
+[Apex 도메인 캐시 문제]
+- 현상: 일반 브라우저에서 사이트 접속 불가 및 이전 에러 캐시 노출 (시크릿 모드에서만 정상 작동).
+- 해결: 로드밸런서 캐시 우회를 위해 https://www.mervis.cloud 로 접속하여 정상 응답 확보.
+
+[Python GIL 병목으로 인한 부하 실패]
+- 현상: Trigger CPU Load 버튼 클릭 시 인스턴스 CPU가 최대 40~50% 선에서 멈춤.
+- 원인: Python 프로세스의 GIL 특성상 단일 스레드로는 멀티코어 환경에서 100% 부하를 발생시킬 수 없음.
+- 해결: multiprocessing 라이브러리를 도입해 시스템의 논리 코어 개수만큼 별도의 프로세스를 포크(Fork)하여 병렬로 CPU 리소스를 점유하도록 app.py 코드 수정.
+
+5. 다음 목표
+- 변경된 멀티프로세싱 부하 스크립트를 통한 2차 Load Test 진행 및 CPU 100% 도달 확인.
+- CPU 임계치 초과 시 Auto-scaler가 개입하여 인스턴스를 증설(Scale-out)하는 과정 확인 및 로드밸런싱(Hostname 교차 출력) 작동 검증.
+- 부하 종료 후 Cooldown 정책에 따른 Scale-in(축소) 동작 검증 및 테스트 전체 과정 포트폴리오용 영상 녹화 진행.
