@@ -1,0 +1,31 @@
+[연구 일지] 2026-03-05
+
+1. 주요 내용
+- SRE 포트폴리오 Lv.3: 대규모 트래픽 스파이크(INF-06) 대응을 위한 분산 부하 테스트 클러스터(Locust Master-Worker) 프로비저닝.
+- 가시성(Observability) 확보: 로컬 Docker 환경의 Grafana를 활용한 GCP 핵심 지표(RPS, CPU, Instance Size) 실시간 시각화 대시보드 구축.
+- 트러블슈팅: 클라우드 초기 프로비저닝 시 발생하는 OS 백그라운드 업데이트 프로세스의 패키지 관리자(apt) Lock 충돌 해결 및 백그라운드 구동(nohup).
+
+2. 진행 요약
+- 단일 PC 부하 주입의 물리적 한계를 극복하고 엔터프라이즈급 트래픽(1만 RPS 이상)을 발생시키기 위해, Terraform을 활용하여 GCP 내부에 Master 1대, Worker 3대 규모의 Locust 클러스터를 구축함(Test as Code).
+- 대규모 부하 스파이크 시나리오를 명확히 관측하기 위해 타겟 서비스 그룹(mervis-serving-mig)의 오토스케일링 최대치(max_replicas)를 10대에서 20대로 상향 조정함.
+- Grafana에 Google Cloud Monitoring 데이터 소스를 연동하고, MQL(Monitoring Query Language)을 통해 로드밸런서의 초당 요청 수(RPS)를 산출하는 게이지(Gauge) 및 시계열(Time series) 패널을 구성함.
+- Terraform 배포 후 Locust 워커 노드가 마스터에 연결되지 않는 이슈를 식별. SSH 직접 접속 및 프로세스 분석을 통해 OS 자동 업데이트 데몬과의 충돌 원인을 파악하고, 강제 제압 및 복구 명령어를 통해 마스터-워커 연동(Workers: 3)을 성공적으로 완료함.
+
+3. 주요 수정 및 개발 내용
+[Infrastructure (Terraform)]
+- modules/compute/main.tf: serving_autoscaler의 max_replicas 값을 20으로 상향 적용.
+- locust.tf 신규 작성: Locust UI 및 노드 간 통신을 위한 방화벽 규칙(TCP 8089, 5557) 개방, 지휘 통제용 마스터 인스턴스(e2-medium) 1대 및 트래픽 주입용 워커 MIG(e2-highcpu-4, 3대) 배포 자동화. metadata_startup_script에 파이썬 부하 테스트 코드 동적 생성 로직 포함.
+
+[Monitoring (Grafana)]
+- Query Type을 MQL로 전환하여 loadbalancing.googleapis.com/https/request_count 지표를 rate(1m) 함수로 변환, RPS 추이를 정밀 추적.
+- 직관적인 스파이크 관측을 위해 0~10,000 구간의 Thresholds(초록/노랑/빨강)가 적용된 Gauge 패널 추가.
+
+4. 시행 착오 및 오류 해결
+[OS 초기 부팅 시 패키지 관리자 Lock 충돌]
+- 현상: 인프라 배포 완료 후에도 마스터 웹 대시보드 접속이 불가하거나 Worker 노드 연결 수가 0으로 고정되는 현상 발생.
+- 원인: Debian/Ubuntu 계열 OS의 기본 이미지 부팅 시, 백그라운드에서 실행되는 자동 보안 업데이트(unattended-upgrades)가 dpkg 프로세스를 점유(Lock)함. 이로 인해 startup_script의 apt-get install 명령어가 거부(E: Could not get lock)되고 조기 종료됨.
+- 해결: SRE 관점에서 SSH로 인스턴스에 진입, `sudo kill -9`로 Lock을 쥐고 있는 데몬(dpkg)을 강제 종료하고 `sudo dpkg --configure -a`로 패키지 상태를 복구함. 이후 Locust를 수동 설치하고 리눅스 세션 종료 시에도 프로그램이 유지되도록 `nohup ... &` 명렁어를 사용하여 백그라운드 실행을 강제함으로써 마스터-워커 연동을 정상 복구함.
+
+5. 다음 목표
+- 구축된 분산 부하 테스트 클러스터를 활용하여 10,000 RPS (Users: 10000, Spawn rate: 100) 규모의 공격적인 트래픽 스파이크 발생.
+- 모니터 분할(Grafana & Locust) 녹화를 통해 트래픽 급증(RPS Gauge Max 도달)에 따른 CPU 임계치 초과 및 오토스케일러의 스케일아웃(1대 -> 최대 20대) 방어 작동 과정을 시각적으로 증명.
