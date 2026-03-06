@@ -33,3 +33,6 @@ Flask
 psutil
 
 redis
+
+gunicorn
+gevent

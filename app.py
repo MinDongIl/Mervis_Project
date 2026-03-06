@@ -21,10 +21,11 @@ REQUEST_TIMESTAMPS = []
 # 대기열 댐(Queue) 크기: 서버 1대가 안정적으로 감당할 최대 유저 수
 MAX_ACTIVE_USERS = 500  
 
-# Redis 연결
+# Redis 연결 (커넥션 풀 적용)
 REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
 try:
-    redis_client = redis.Redis(host=REDIS_HOST, port=6379, db=0, decode_responses=True)
+    pool = redis.ConnectionPool(host=REDIS_HOST, port=6379, db=0, decode_responses=True, max_connections=1000)
+    redis_client = redis.Redis(connection_pool=pool)
     redis_client.ping()
     print(f"Connected to Redis at {REDIS_HOST}")
 except Exception as e:
@@ -210,7 +211,8 @@ def cleanup_zombies(current_time):
 @app.route('/')
 def index():
     if not redis_client:
-        return render_template_string(DASHBOARD_HTML)
+        # Fallback 수정: Redis 죽었을 때 무조건 통과시키지 않고 503 에러로 방어
+        return make_response("<h1>현재 접속자가 많아 서버를 일시적으로 보호 중입니다. 잠시 후 다시 접속해주세요. (Redis Offline)</h1>", 503)
 
     user_id = request.cookies.get('user_id')
     if not user_id:
@@ -247,7 +249,7 @@ def index():
             
     except redis.RedisError as e:
         print(f"Redis error: {e}")
-        return render_template_string(DASHBOARD_HTML)
+        return make_response("<h1>현재 접속자가 많아 서버를 일시적으로 보호 중입니다. 잠시 후 다시 접속해주세요.</h1>", 503)
 
 @app.route('/api/wait_status')
 def wait_status():
