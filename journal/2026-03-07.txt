@@ -1,0 +1,64 @@
+[연구 일지] 2026-03-07
+
+1. 주요 내용
+- SRE 포트폴리오 부하 테스트 환경 구축: Locust Master-Worker 분산 클러스터(Master 1대, Worker 3대) Terraform 프로비저닝 완전 자동화.
+- 클라우드 자원 할당량(Quota) 제약 대응: GCP 리전별 vCPU 코어 제한을 고려한 스케일링 전략 재수립(Scale-up 대신 Scale-out 최대치 상향).
+- 대용량 트래픽 방어 아키텍처 고도화: Redis 대기열(Queue) 시스템 세션 정리 기능(Garbage Collection) 추가 및 Fallback 방어선 구축.
+- 백엔드 애플리케이션 동시성 최적화: 개발용 내장 서버(Werkzeug) 병목 타파를 위한 Gunicorn 및 Gevent 비동기 워커 도입.
+- 무중단 배포(Zero-Downtime Deployment) 파이프라인: Regional MIG 특성을 반영한 롤링 배포(Rolling Update) 정책 적용.
+
+2. 진행 요약
+- 1만 명 규모의 트래픽을 단일 PC에서 생성하는 것의 한계를 인지하고, 테라폼을 통해 GCP 내부에 분산 부하 테스트 환경(Locust)을 코드로 구축(Test as Code)함.
+- 부하 테스트 전, 트래픽을 원활히 소화하기 위해 인스턴스 사양을 높였으나(Scale-up) GCP 리전 코어 제한(Quota) 에러가 발생함.
+  이를 우회하기 위해 인스턴스 단일 스펙은 다시 낮추고(e2-standard-2), 오토스케일링의 최대 확장 규모(max_replicas)를 늘리는 수평 확장(Scale-out) 전략으로 선회함.
+- 부하 테스트(10,000 Users, 100 Spawn rate) 진행 중 발생한 서버 셧다운 및 502/504 에러 폭발의 원인을 분석함.
+  Flask 내장 서버의 단일 스레드 처리 한계와, 트래픽 누적으로 인한 Redis 오프라인 시 대기열을 우회해버리는 로직 결함을 식별함.
+- 백엔드에 Gunicorn(WSGI)과 Gevent를 적용하고 Redis 커넥션 풀을 설정하여 동시 처리량을 극대화함.
+  더불어 부하 주입 중 멈춘 Locust 유저(좀비 세션)들이 대기열을 영구 점유하는 현상을 해소하기 위해 30초 주기의 세션 정리 로직(cleanup_zombies)을 추가함.
+- 백엔드 코드 최적화 후, 향후 어플리케이션 업데이트 시 서비스 중단이 발생하지 않도록 Regional MIG에 무중단 롤링 배포 정책을 수립하고 인프라에 적용함.
+
+3. 주요 수정 및 개발 내용
+[Infrastructure (Terraform)]
+- locust.tf: 방화벽 개방(8089, 5557, 5558) 및 Master/Worker 인스턴스 배포.
+  OS 의존성 제거를 위해 Docker 컨테이너 기반으로 Locust를 실행하도록 구성.
+- compute/main.tf (스케일링): Quota 제약을 피하기 위해 machine_type을 e2-standard-2로 조정하고 serving_autoscaler의 max_replicas 한도를 상향 조정.
+- compute/main.tf (배포 정책): serving_mig 블록에 update_policy 추가.
+  PROACTIVE 및 SUBSTITUTE 방식을 채택하고, 리전 밸런싱을 위해 max_surge_fixed 값을 3으로 설정하여 무중단 배포 보장.
+- 시작 스크립트(startup_script): 백엔드 실행 명령어를 기존 `python app.py`에서 `gunicorn -w 4 -k gevent --worker-connections 1000 -b 0.0.0.0:8080 app:app`으로 전면 교체.
+
+[Backend (Python/Flask)]
+- app.py (대기열 로직): Redis 연결 실패 시 무조건 통과시키던 치명적 결함을 수정하여 503 Service Unavailable 상태 코드로 백엔드를 보호(Fallback).
+- app.py (세션 관리): cleanup_zombies(current_time) 함수를 구현하여 30초 이상 응답 없는 유저를 active_users 및 waitlist에서 강제 삭제.
+  SRE 테스트 편의를 위한 Redis 초기화 엔드포인트(/api/reset) 추가.
+- app.py (커넥션 풀): 단일 Redis 연결 객체를 ConnectionPool(max_connections=1000)로 변경하여 다중 워커 환경에서의 통신 병목 제거.
+- requirements.txt: gunicorn, gevent 추가.
+
+4. 시행 착오 및 오류 해결
+[인프라 리소스 충돌 (409 alreadyExists)]
+- 현상: 수동으로 생성했던 locust-master 인스턴스가 존재하여 Terraform apply 실패.
+- 해결: gcloud 명령어로 기존 찌꺼기 리소스를 완전히 삭제한 후 Terraform 상태와 실제 클라우드 상태를 동기화하여 프로비저닝 성공.
+
+[리눅스 OS 백그라운드 프로세스 충돌 및 스크립트 포맷 오류]
+- 현상: Locust 프로비저닝 후 SSH 접속 시 docker 명령어를 찾을 수 없으며 프로세스가 실행되지 않음.
+- 원인 1: 우분투 apt-get install 과정에서 인터랙티브 팝업이 발생하여 스크립트가 영구 대기함.
+- 원인 2: Windows 환경에서 복사된 코드의 줄바꿈 문자(CRLF, \r\n)가 리눅스 쉘에서 ^M (bad interpreter)으로 인식되어 스크립트 실행이 원천 거부됨.
+- 해결: 스크립트 최상단에 `export DEBIAN_FRONTEND=noninteractive`를 선언하고, Terraform의 `replace(text, "\r", "")` 함수를 사용하여 렌더링 시점에 윈도우 줄바꿈 문자를 완전히 정제함.
+
+[클라우드 Quota 제약에 따른 스케일링 실패]
+- 현상: 대규모 트래픽 대비를 위해 인스턴스 코어 수를 늘려 배포하려 했으나 GCP Region vCPU Quota 초과 에러 발생.
+- 해결: 개별 인스턴스를 무리하게 키우는 Scale-up 방식을 포기하고, 적정 스펙(e2-standard-2)을 유지한 채 로드밸런서와 MIG를 통한 Scale-out(노드 수 증가)에 집중하도록 아키텍처 방향성을 클라우드 네이티브하게 수정함.
+
+[백엔드 동시성 병목 및 대기열 마비]
+- 현상: 10,000명 동시 접속 주입 시 Failures 비율 급증, 95% 응답 속도 수만 ms 돌파, 대기열이 작동하지 않고 서버가 터짐.
+- 원인: Flask 내장 웹 서버(Werkzeug)가 동기적으로 요청을 처리하여 OS 레벨의 큐가 꽉 참. 더불어 접속이 끊긴 더미 트래픽이 Redis에 계속 누적되어 대기열이 순환되지 않음.
+- 해결: 실서비스 표준인 Gunicorn과 Gevent 비동기 워커를 도입하여 동시 접속 처리량을 대폭 늘림. 또한 가비지 컬렉션 역할의 세션 정리 함수를 미들웨어로 동작시켜 대기열이 정상적으로 순환되도록 뚫어냄.
+
+[Regional MIG 롤링 배포 Surge 제약 위반]
+- 현상: 롤링 배포를 위해 max_surge_fixed 값을 1로 설정하고 apply 시, GCP API 400 (Invalid value) 에러 발생.
+- 원인: 리전 단위의 MIG는 3개의 가용 영역(Zone)에 인스턴스를 균등하게 분산 배치하므로, 배포 시 추가로 띄우는 Surge 인스턴스 숫자도 영역의 개수와 밸런스를 맞춰야 함 (최소 3 혹은 0).
+- 해결: max_surge_fixed를 3으로 수정하여 GCP 리전 밸런싱 제약을 충족하고 롤링 배포를 성공적으로 적용함.
+
+5. 다음 목표
+- 최적화된 백엔드 및 인프라를 바탕으로 1만 명 트래픽 스파이크 테스트 재수행 (Failures 0% 확인).
+- 부하가 진행되는 도중 무중단 롤링 배포를 트리거하여, 신/구 서버 교체 시 502/504 에러가 발생하지 않음을 검증 (Lv.1 배포 시나리오).
+- SRE/DevOps 포트폴리오 가이드에 명시된 나머지 가용성(INF-01, 02) 테스트 수행.
