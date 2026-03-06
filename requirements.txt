@@ -31,3 +31,5 @@ discord
 
 Flask
 psutil
+
+redis
