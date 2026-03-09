@@ -27,14 +27,14 @@ steps:
       - |
         terraform init
 
-  # 5. Terraform Apply (image_tag 변수에 커밋 해시 주입 후 템플릿 갱신 및 롤링 배포 트리거)
+  # 5. Terraform Apply (image_tag와 project_id 변수 주입 후 템플릿 갱신 및 롤링 배포 트리거)
   - name: 'hashicorp/terraform:latest'
     entrypoint: 'sh'
     dir: 'mervis_infra'  # 다운로드한 인프라 폴더 내부로 진입
     args:
       - '-c'
       - |
-        terraform apply -auto-approve -var="image_tag=$COMMIT_SHA"
+        terraform apply -auto-approve -var="image_tag=$COMMIT_SHA" -var="project_id=$PROJECT_ID"
 
 timeout: '1200s'
 options:
