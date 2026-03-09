@@ -7,25 +7,30 @@ steps:
       '.'
     ]
 
-  # 2. 이미지를 Artifact Registry로 푸시 (생성된 모든 태그 푸시)
+  # 2. 이미지를 Artifact Registry로 푸시
   - name: 'gcr.io/cloud-builders/docker'
     args: [
       'push', 
-      'asia-northeast3-docker.pkg.dev/$PROJECT_ID/mervis-repo/mervis-core',
-      '--all-tags'
+      'asia-northeast3-docker.pkg.dev/$PROJECT_ID/mervis-repo/mervis-core:$COMMIT_SHA'
     ]
 
-  # 3. Terraform 초기화 (GCS 백엔드 상태 파일 연결)
+  # 3. 인프라 저장소(mervis_infra) Clone
+  - name: 'gcr.io/cloud-builders/git'
+    args: ['clone', 'https://github.com/MinDongIl/Mervis_Infra.git']
+
+  # 4. Terraform 초기화 (GCS 백엔드 상태 파일 연결)
   - name: 'hashicorp/terraform:latest'
     entrypoint: 'sh'
+    dir: 'mervis_infra'  # 다운로드한 인프라 폴더 내부로 진입
     args:
       - '-c'
       - |
         terraform init
 
-  # 4. Terraform Apply (image_tag 변수에 커밋 해시 주입 후 템플릿 갱신 및 롤링 배포 트리거)
+  # 5. Terraform Apply (image_tag 변수에 커밋 해시 주입 후 템플릿 갱신 및 롤링 배포 트리거)
   - name: 'hashicorp/terraform:latest'
     entrypoint: 'sh'
+    dir: 'mervis_infra'  # 다운로드한 인프라 폴더 내부로 진입
     args:
       - '-c'
       - |
