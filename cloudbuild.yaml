@@ -7,7 +7,7 @@ steps:
       '.'
     ]
 
-  # 2. 이미지를 Artifact Registry로 푸시
+  # 2. 이미지를 Artifact Registry로 푸시 (생성된 태그 푸시)
   - name: 'gcr.io/cloud-builders/docker'
     args: [
       'push', 
@@ -16,7 +16,7 @@ steps:
 
   # 3. 인프라 저장소(mervis_infra) Clone
   - name: 'gcr.io/cloud-builders/git'
-    args: ['clone', 'https://github.com/MinDongIl/Mervis_Infra.git']
+    args: ['clone', 'https://github.com/MinDongIl/mervis_infra.git']
 
   # 4. Terraform 초기화 (GCS 백엔드 상태 파일 연결)
   - name: 'hashicorp/terraform:latest'
