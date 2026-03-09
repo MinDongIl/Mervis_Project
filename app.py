@@ -11,17 +11,12 @@ from datetime import timedelta
 
 app = Flask(__name__)
 
-# ==========================================
-# 1. 글로벌 변수 및 Redis 설정
-# ==========================================
 START_TIME = time.time()
 TOTAL_REQUESTS = 0
 REQUEST_TIMESTAMPS = []
 
-# 대기열 댐(Queue) 크기: 서버 1대가 안정적으로 감당할 최대 유저 수
 MAX_ACTIVE_USERS = 500  
 
-# Redis 연결 (커넥션 풀 적용)
 REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
 try:
     pool = redis.ConnectionPool(host=REDIS_HOST, port=6379, db=0, decode_responses=True, max_connections=1000)
@@ -32,11 +27,7 @@ except Exception as e:
     print(f"Redis connection failed: {e}")
     redis_client = None
 
-# ==========================================
-# 2. HTML 템플릿 정의
-# ==========================================
 
-# (1) SRE 대시보드 화면
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="ko">
@@ -141,7 +132,7 @@ DASHBOARD_HTML = """
 </html>
 """
 
-# (2) 수용량 초과 시 보여줄 대기열 화면
+
 WAITING_ROOM_HTML = """
 <!DOCTYPE html>
 <html lang="ko">
@@ -165,7 +156,7 @@ WAITING_ROOM_HTML = """
         <div class="spinner"></div>
         <div class="rank" id="rankDisplay">대기 순서 확인 중...</div>
         <p>순서가 되면 자동으로 페이지가 이동됩니다.</p>
-        <p class="warning">※ 새로고침(F5)을 누르시면 대기 순서가 맨 뒤로 밀려납니다. 이 화면을 유지해주세요.</p>
+        <p class="warning">※ 새로고침(F5)을 눌러도 대기 순서는 유지됩니다.</p>
     </div>
 
     <script>
@@ -187,9 +178,6 @@ WAITING_ROOM_HTML = """
 </html>
 """
 
-# ==========================================
-# 3. 요청 카운터 미들웨어
-# ==========================================
 @app.before_request
 def track_requests():
     global TOTAL_REQUESTS, REQUEST_TIMESTAMPS
@@ -199,19 +187,19 @@ def track_requests():
         REQUEST_TIMESTAMPS.append(current_time)
         REQUEST_TIMESTAMPS = [ts for ts in REQUEST_TIMESTAMPS if current_time - ts <= 1.0]
 
-# ==========================================
-# 4. 라우팅 로직 (대기열 댐 + 좀비 퇴치 기능)
-# ==========================================
+
 def cleanup_zombies(current_time):
-    """30초 이상 응답이 없는(Locust가 멈춘) 유저를 삭제합니다."""
-    if redis_client:
-        redis_client.zremrangebyscore('active_users', '-inf', current_time - 30)
-        redis_client.zremrangebyscore('waitlist', '-inf', current_time - 30)
+    if not redis_client:
+        return
+    zombies = redis_client.zrangebyscore('last_active', '-inf', current_time - 30)
+    if zombies:
+        redis_client.zrem('active_users', *zombies)
+        redis_client.zrem('waitlist', *zombies)
+        redis_client.zrem('last_active', *zombies)
 
 @app.route('/')
 def index():
     if not redis_client:
-        # Fallback 수정: Redis 죽었을 때 무조건 통과시키지 않고 503 에러로 방어
         return make_response("<h1>현재 접속자가 많아 서버를 일시적으로 보호 중입니다. 잠시 후 다시 접속해주세요. (Redis Offline)</h1>", 503)
 
     user_id = request.cookies.get('user_id')
@@ -221,28 +209,34 @@ def index():
     try:
         current_time = time.time()
         cleanup_zombies(current_time)
+        
+        # 접속 생존 신고
+        redis_client.zadd('last_active', {user_id: current_time})
 
-        # 1. 이미 통과하여 정상 이용 중인 유저
+        # 이미 활성화된 유저
         if redis_client.zscore('active_users', user_id) is not None:
-            redis_client.zadd('active_users', {user_id: current_time})
             resp = make_response(render_template_string(DASHBOARD_HTML))
             resp.set_cookie('user_id', user_id, max_age=3600)
             return resp
 
-        # 2. 현재 서버 수용량 확인
+        # 대기열에 이미 있는 유저 (새로고침 시 새치기 차단)
+        if redis_client.zscore('waitlist', user_id) is not None:
+            resp = make_response(render_template_string(WAITING_ROOM_HTML))
+            resp.set_cookie('user_id', user_id, max_age=3600)
+            return resp
+
         active_count = redis_client.zcard('active_users')
+        waitlist_count = redis_client.zcard('waitlist')
         
-        if active_count < MAX_ACTIVE_USERS:
-            # 자리 있음 -> 통과
+        # 빈자리가 있고, 내 앞에 대기자가 아무도 없을 때만 바로 통과
+        if active_count < MAX_ACTIVE_USERS and waitlist_count == 0:
             redis_client.zadd('active_users', {user_id: current_time})
             resp = make_response(render_template_string(DASHBOARD_HTML))
             resp.set_cookie('user_id', user_id, max_age=3600)
             return resp
         else:
-            # 자리 없음 -> 대기열 줄서기
-            if not redis_client.zscore('waitlist', user_id):
-                redis_client.zadd('waitlist', {user_id: current_time})
-            
+            # 대기열에 진입 (순위 점수는 최초 진입 시간 고정)
+            redis_client.zadd('waitlist', {user_id: current_time})
             resp = make_response(render_template_string(WAITING_ROOM_HTML))
             resp.set_cookie('user_id', user_id, max_age=3600)
             return resp
@@ -263,21 +257,15 @@ def wait_status():
     try:
         current_time = time.time()
         cleanup_zombies(current_time)
+        redis_client.zadd('last_active', {user_id: current_time})
 
-        # 자리가 나서 통과 처리 되었는지 확인
         if redis_client.zscore('active_users', user_id) is not None:
-            redis_client.zadd('active_users', {user_id: current_time})
             return jsonify({"status": "allowed"})
         
-        # 내 대기열 순위 확인
         rank = redis_client.zrank('waitlist', user_id)
         if rank is not None:
-            # 시간 갱신
-            redis_client.zadd('waitlist', {user_id: current_time})
-
             active_count = redis_client.zcard('active_users')
             
-            # 빈 자리가 생겼고, 내 순위가 통과권이면 승급
             if active_count < MAX_ACTIVE_USERS and rank < (MAX_ACTIVE_USERS - active_count):
                 redis_client.zrem('waitlist', user_id)
                 redis_client.zadd('active_users', {user_id: current_time})
@@ -285,7 +273,7 @@ def wait_status():
                 
             return jsonify({"status": "waiting", "rank": rank + 1})
             
-        return jsonify({"status": "error", "message": "Not in waitlist"}), 400
+        return jsonify({"status": "error", "message": "Not in waitlist or expired"}), 400
         
     except redis.RedisError:
         return jsonify({"status": "allowed"})
@@ -297,6 +285,7 @@ def exit_service():
         try:
             redis_client.zrem('active_users', user_id)
             redis_client.zrem('waitlist', user_id)
+            redis_client.zrem('last_active', user_id)
         except redis.RedisError:
             pass
 
@@ -311,15 +300,12 @@ def exit_service():
 
 @app.route('/api/reset')
 def reset_redis():
-    """SRE 테스트용: Redis 데이터 강제 초기화"""
     if redis_client:
         redis_client.flushdb()
         return jsonify({"message": "Redis Queue Cleared!"}), 200
     return jsonify({"error": "Redis not connected"}), 500
 
-# ==========================================
-# 5. 기존 SRE 진단 로직
-# ==========================================
+
 def cpu_stress(duration=30):
     timeout = time.time() + duration
     while time.time() < timeout:
@@ -336,12 +322,10 @@ def status():
     current_time = time.time()
     current_rps = len([ts for ts in REQUEST_TIMESTAMPS if current_time - ts <= 1.0])
 
-    # 대시보드 보는 중이면 세션 연장
     user_id = request.cookies.get('user_id')
     if user_id and redis_client:
         try:
-            if redis_client.zscore('active_users', user_id) is not None:
-                redis_client.zadd('active_users', {user_id: current_time})
+            redis_client.zadd('last_active', {user_id: current_time})
         except: pass
 
     return jsonify({
