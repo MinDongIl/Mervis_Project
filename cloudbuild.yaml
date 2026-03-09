@@ -1,29 +1,35 @@
 steps:
-  # 1. Docker 이미지 빌드
+  # 1. Docker 이미지 빌드 (Git 커밋 해시 태그 생성)
   - name: 'gcr.io/cloud-builders/docker'
     args: [
       'build',
-      '-t', 'asia-northeast3-docker.pkg.dev/gen-lang-client-0129980697/mervis-repo/mervis-core:latest',
+      '-t', 'asia-northeast3-docker.pkg.dev/$PROJECT_ID/mervis-repo/mervis-core:$COMMIT_SHA',
       '.'
     ]
 
-  # 2. 이미지를 Artifact Registry로 푸시
+  # 2. 이미지를 Artifact Registry로 푸시 (생성된 모든 태그 푸시)
   - name: 'gcr.io/cloud-builders/docker'
     args: [
-      'push',
-      'asia-northeast3-docker.pkg.dev/gen-lang-client-0129980697/mervis-repo/mervis-core:latest'
+      'push', 
+      'asia-northeast3-docker.pkg.dev/$PROJECT_ID/mervis-repo/mervis-core',
+      '--all-tags'
     ]
 
-  # 3. MIG 롤링 업데이트
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
-    entrypoint: 'gcloud'
-    args: [
-      'compute', 'instance-groups', 'managed', 'rolling-action', 'replace',
-      'mervis-serving-mig',
-      '--region=asia-northeast3',
-      '--max-unavailable=0',  
-      '--max-surge=3'         
-    ]
+  # 3. Terraform 초기화 (GCS 백엔드 상태 파일 연결)
+  - name: 'hashicorp/terraform:latest'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform init
+
+  # 4. Terraform Apply (image_tag 변수에 커밋 해시 주입 후 템플릿 갱신 및 롤링 배포 트리거)
+  - name: 'hashicorp/terraform:latest'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        terraform apply -auto-approve -var="image_tag=$COMMIT_SHA"
 
 timeout: '1200s'
 options:
