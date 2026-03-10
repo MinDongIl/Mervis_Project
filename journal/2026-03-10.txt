@@ -1,0 +1,35 @@
+[연구 일지] 2026-03-10
+
+1. 주요 내용
+- Cloud Armor를 활용한 DDoS 방어(Rate Limiting) 검증 및 Cloud SQL 특정 시점 복구(PITR) 기능 구현 완료.
+
+2. 진행 요약
+- 로드밸런서의 백엔드 서비스에 Cloud Armor 보안 정책을 연결하는 Terraform 코드를 작성함. 단일 IP에서 1분 동안 100회 초과 요청 시 5분간 차단(403 Forbidden)하는 룰을 적용하고, 루프 명령어를 통한 트래픽 집중 주입으로 방어 동작을 검증함.
+- Cloud SQL(PostgreSQL) 인스턴스를 프로비저닝하기 위한 데이터베이스 모듈을 신규 생성함. 비밀번호 하드코딩의 보안 취약점을 식별하고, GCP Secret Manager를 통해 테라폼 적용 시 동적으로 비밀번호를 주입하도록 인프라 코드를 리팩토링함.
+- 데이터베이스 쉘에 접속하여 테스트 데이터를 생성한 후 고의로 삭제(DROP TABLE)하여 장애 상황을 유발함. 사전에 기록해 둔 기준 시간(Point-in-Time)을 활용하여 삭제 직전의 상태를 가진 새로운 복구 인스턴스를 성공적으로 클론(Clone)하고 데이터 유실이 없음을 최종 확인함.
+- 수행한 PITR 테스트(PoC)와 실제 운영 서비스의 장애 복구 흐름을 비교 분석함. Cloud Logging을 통한 장애 시점 역추적의 필요성과, 전체 복구가 아닌 부분 데이터 추출 및 병합(Merge)의 실무적 중요성을 파악함.
+
+3. 주요 수정 및 개발 내용
+[보안 인프라 (Cloud Armor)]
+- modules/security: DDoS 방어 및 Rate Limiting 규칙이 포함된 보안 정책 리소스 생성.
+- modules/lb: 백엔드 서비스(`google_compute_backend_service`) 속성에 security_policy 연동.
+
+[데이터베이스 인프라 (Cloud SQL)]
+- modules/database: db-f1-micro 사양으로 인스턴스를 구성하고, `point_in_time_recovery_enabled = true`를 적용하여 데이터 복구 요건 충족.
+- Secret Manager 연동: `data` 블록을 활용해 보안 비밀번호를 참조하여 DB User 생성 리소스에 주입.
+
+4. 시행 착오 및 오류 해결
+[Terraform 권한 및 모듈 변수 오류]
+- 현상: `terraform apply` 시 ADC(Application Default Credentials) 인증 누락 및 security 모듈 내 `project_id` 변수 전달 오류 발생.
+- 해결: `gcloud auth application-default login` 명령어로 GCP 계정 인증을 다시 수행하고, 루트 파일에서 불필요하게 전달되던 모듈 변수를 삭제하여 테라폼 적용을 정상화함.
+
+[데이터베이스 접속 및 환경 설정 오류]
+- 현상: 로컬 터미널에서 `gcloud sql connect` 실행 시 Cloud SQL Admin API 미사용, 작업 프로젝트 지정 오류, Cloud SQL Proxy 미설치, psql 클라이언트 부재 등 연속적인 환경 에러 발생.
+- 해결: 로컬 환경 구성의 번거로움을 피하기 위해 모든 도구가 내장된 GCP Cloud Shell로 전환함. `gcloud config set project`로 Mervis 프로젝트를 명확히 지정하여 DB 쉘 진입에 성공함.
+
+[PITR 복구 시간 소요 및 상태 모니터링]
+- 현상: 특정 시점 복구(clone) 명령어 실행 후 타임아웃 경고 발생 및 복구 지연 현상.
+- 분석 및 해결: 복구 작업은 단순 복사가 아닌 백업 파일과 WAL(트랜잭션 로그)을 순차적으로 재실행하여 새 가상 머신을 띄우는 과정임을 인지함. `gcloud sql instances list` 명령어를 통해 `PENDING_CREATE` 상태를 추적하고 `RUNNABLE`로 전환될 때까지 대기하여 검증을 완수함.
+
+5. 다음 목표
+- [Lv.4 DR] INF-09: 멀티 리전 재해 복구 (Region Failover) - 서울 리전(Main) 장애 발생 시 글로벌 로드밸런서를 통해 도쿄 리전(Standby)으로 트래픽이 자동 우회되도록 아키텍처 확장 및 테라폼 코드 구성.
